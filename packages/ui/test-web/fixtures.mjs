@@ -128,6 +128,53 @@ export function buildFixtures(now = Date.now()) {
   };
   views.set('TV10UI1', v10);
 
+  // The same surface after the owner answered it from the page: the answer's message carries the action as meta (task
+  // show's messages[].meta), and the task runs on. And on a task that is done, never sent. Neither is in the status
+  // list; they are only opened by their URL.
+  const surfaceTask = (id, fields) => {
+    const view = clone(a2ui);
+    Object.assign(view, { id, branch: `jv/${id}-customers-empty-state`, worktree: `/Users/owner/.jv/worktrees/shop/${id}` }, fields);
+    const run = view.steps[0].runs[0];
+    run.id = `R${id.slice(1)}`;
+    run.report = { ...run.report, id: `E${id.slice(1)}`, sessionId: run.id, taskId: id };
+    return view;
+  };
+  const answered = surfaceTask('TA2SENT', { title: 'Customers empty state, answered from the form', state: 'running', stateReason: 'step 1 (implement): answered, continuing' });
+  answered.messages = [
+    {
+      id: 'MA2SENT',
+      direction: 'answer',
+      text: 'Guided start',
+      createdAt: ago(2),
+      deliveredAt: null,
+      session: null,
+      meta: { name: 'answer', surfaceId: 'empty-state-choice', sourceComponentId: 'send', timestamp: ago(2), context: { label: 'Guided start' } },
+    },
+  ];
+  views.set('TA2SENT', answered);
+  views.set('TA2DONE', surfaceTask('TA2DONE', { title: 'Customers empty state, finished', state: 'done', stateReason: 'done', endedAt: ago(1) }));
+  // A step that asked twice with the same surface id: the first surface was sent, the second (newer than the message)
+  // was not.
+  const again = surfaceTask('TA2AGAN', { title: 'Customers empty state, asked again' });
+  const first = again.steps[0].runs[0];
+  Object.assign(first, { startedAt: ago(40), endedAt: ago(10), lastEventAt: ago(10) });
+  first.report = { ...first.report, createdAt: ago(10) };
+  const second = { ...clone(first), id: 'RA2AGN2', startedAt: ago(8), endedAt: ago(3), lastEventAt: ago(3) };
+  second.report = { ...second.report, id: 'EA2AGN2', sessionId: 'RA2AGN2', createdAt: ago(3) };
+  again.steps[0].runs.push(second);
+  again.messages = [
+    {
+      id: 'MA2AGAN',
+      direction: 'answer',
+      text: 'Short message',
+      createdAt: ago(9),
+      deliveredAt: ago(8),
+      session: 'RA2AGN2',
+      meta: { name: 'answer', surfaceId: 'empty-state-choice', sourceComponentId: 'send', timestamp: ago(9), context: { label: 'Short message' } },
+    },
+  ];
+  views.set('TA2AGAN', again);
+
   const running = clone(taskShow);
   running.id = 'T7FDA1R';
   running.kind = 'feature';

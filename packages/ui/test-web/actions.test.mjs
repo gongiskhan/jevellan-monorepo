@@ -117,6 +117,57 @@ describe('task page', () => {
     await context.close();
   });
 
+  test('a surface whose action the store already holds shows as sent on load, with the time of the message', async () => {
+    const { context, page } = await open('/t/TA2SENT');
+    const surface = page.locator('.jv-a2ui');
+    await surface.getByRole('button', { name: 'Send' }).waitFor();
+    const line = page.getByText(/^Sent to the step at \d{2}:\d{2}$/);
+    await line.waitFor();
+    const sentAt = mock.data.views.get('TA2SENT').messages[0].createdAt;
+    const d = new Date(sentAt);
+    const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    assert.equal((await line.textContent()).trim(), `Sent to the step at ${hhmm}`);
+    assert.equal(await surface.getAttribute('class'), 'jv-a2ui sent');
+    assert.equal(await surface.evaluate((el) => el.inert), true);
+    await page.waitForFunction(() => Number(getComputedStyle(document.querySelector('.jv-a2ui')).opacity) < 0.6);
+    // The picker shows what the action sent (Guided start), not the step's first value (Short message).
+    await page.waitForFunction(() => document.querySelector('.jv-a2ui input[value="Guided start"]')?.checked === true);
+    assert.equal(await surface.getByRole('radio', { name: 'Short message' }).isChecked(), false);
+    const from = mock.requests.length;
+    await surface.getByRole('button', { name: 'Send' }).click({ force: true }).catch(() => undefined);
+    await page.waitForTimeout(300);
+    assert.equal(posts('/api/tasks/TA2SENT/ui-action', from).length, 0, 'an inert surface posts nothing');
+    await context.close();
+  });
+
+  test('a message belongs to the newest surface of that id before it: an earlier surface is sent, a later one is not', async () => {
+    const { context, page } = await open('/t/TA2AGAN');
+    const earlier = page.getByRole('article', { name: 'Report of RA2AGAN' }).locator('.jv-a2ui');
+    const later = page.getByRole('article', { name: 'Report of RA2AGN2' }).locator('.jv-a2ui');
+    await later.getByRole('button', { name: 'Send' }).waitFor();
+    await earlier.getByRole('button', { name: 'Send' }).waitFor();
+    assert.equal(await earlier.getAttribute('class'), 'jv-a2ui sent');
+    assert.equal(await later.getAttribute('class'), 'jv-a2ui');
+    assert.equal(await page.getByText(/^Sent to the step at \d{2}:\d{2}$/).count(), 1);
+    await later.getByRole('radio', { name: 'Guided start' }).check();
+    const from = mock.requests.length;
+    await later.getByRole('button', { name: 'Send' }).click();
+    const [post] = await until(() => posts('/api/tasks/TA2AGAN/ui-action', from).length && posts('/api/tasks/TA2AGAN/ui-action', from));
+    assert.deepEqual(post.body.action.context, { label: 'Guided start' });
+    await context.close();
+  });
+
+  test('the surface of a done task is inert with a line and shows nothing as sent', async () => {
+    const { context, page } = await open('/t/TA2DONE');
+    const surface = page.locator('.jv-a2ui');
+    await surface.getByRole('button', { name: 'Send' }).waitFor();
+    await page.getByText('Task done: the surface takes no input.').waitFor();
+    assert.equal(await surface.getAttribute('class'), 'jv-a2ui closed');
+    assert.equal(await surface.evaluate((el) => el.inert), true);
+    assert.equal(await page.getByText(/^Sent to the step at/).count(), 0);
+    await context.close();
+  });
+
   test('version "1.0" messages show "UI not rendered: unsupported version" and the rest of the report', async () => {
     const { context, page } = await open('/t/TV10UI1');
     await page.getByText('UI not rendered: unsupported version').waitFor();

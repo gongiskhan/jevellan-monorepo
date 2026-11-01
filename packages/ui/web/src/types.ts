@@ -195,6 +195,8 @@ export interface TaskMessage {
   createdAt: string;
   deliveredAt: string | null;
   session: string | null;
+  /** The raw A2UI action of a UI action message (messages.meta_json); absent for other messages. */
+  meta?: Record<string, unknown>;
 }
 
 export interface LandingView {

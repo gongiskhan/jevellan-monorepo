@@ -3,13 +3,15 @@
 // owner, with a free-text answer under them (the options are native buttons whether or not a `ui` array exists);
 // testsRun as one line with an SVG tick or cross; changedFiles; screenshots inline from /evidence/ (only images under
 // the worktree's .jv-evidence/, as the server checks again, D-064); limitations; ownerCommands each with a copy
-// button; and the A2UI surface under "From the step" (a2ui.tsx, loaded on demand).
+// button; and the A2UI surface under "From the step" (a2ui.tsx, loaded on demand). Whether a surface already sent an
+// action comes from the store (the messages' meta, surfaceSent), so a reload or another device shows it as sent too;
+// a surface of a done or stopped task takes no input (core refuses both an answer and a message there).
 
 import { lazy, Suspense, useState } from 'react';
 import { answerTask, useAction } from './api.js';
 import { CommandLine, ErrorLine, Markdown, Stamp, useApp } from './components.js';
 import { Icon } from './icons.js';
-import type { ReportView } from './types.js';
+import type { ReportView, TaskMessage, TaskView } from './types.js';
 
 // The A2UI renderer (lit, the catalogs, zod 3) is most of the bundle and only reports with a `ui` array need it.
 const A2uiBlock = lazy(() => import('./a2ui.js').then((m) => ({ default: m.A2uiBlock })));
@@ -36,6 +38,41 @@ export function evidenceUrl(taskId: string | null, worktree: string | null, path
   if (segments.some((s) => s === '' || s === '.' || s === '..')) return null;
   if (!IMAGE.test(p)) return null;
   return `/evidence/${encodeURIComponent(taskId)}/${segments.map(encodeURIComponent).join('/')}`;
+}
+
+/** The surface ids a report's `ui` messages name (any of the four message kinds, any version). */
+export function surfaceIds(ui: readonly unknown[] | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const message of ui ?? []) {
+    if (!message || typeof message !== 'object') continue;
+    for (const body of Object.values(message as Record<string, unknown>)) {
+      const id = body && typeof body === 'object' ? (body as { surfaceId?: unknown }).surfaceId : undefined;
+      if (typeof id === 'string' && id !== '') ids.add(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * When an action of this report's surface was already sent: the first message whose meta (the raw A2UI action) names
+ * one of its surfaces. A message belongs to the newest report of the task that names its surfaceId and is not newer
+ * than the message, so a later report that reuses a surface id starts unsent.
+ */
+export function surfaceSent(task: Pick<TaskView, 'steps' | 'messages'> | null | undefined, report: ReportView): TaskMessage | undefined {
+  if (!task || !report.ui?.length) return undefined;
+  const mine = surfaceIds(report.ui);
+  const reports = task.steps.flatMap((step) => step.runs).flatMap((run) => (run.report?.ui?.length ? [run.report] : []));
+  if (!reports.some((r) => r.id === report.id)) reports.push(report);
+  for (const message of task.messages) {
+    const surface = message.meta?.surfaceId;
+    if (typeof surface !== 'string' || !mine.has(surface) || message.createdAt < report.createdAt) continue;
+    const owner = reports
+      .filter((r) => r.createdAt <= message.createdAt && surfaceIds(r.ui).has(surface))
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+      .at(-1);
+    if (owner?.id === report.id) return message;
+  }
+  return undefined;
 }
 
 const STATUS_LABELS: Record<string, string> = { done: 'done', progress: 'progress', blocked: 'blocked', 'needs-decision': 'needs a decision' };
@@ -107,8 +144,22 @@ export function TestsLine({ tests }: { tests: NonNullable<ReportView['testsRun']
   );
 }
 
-export function ReportCard({ report, worktree, waitingOnOwner, title }: { report: ReportView; worktree: string | null; waitingOnOwner: boolean; title?: string }) {
+export function ReportCard({
+  report,
+  worktree,
+  waitingOnOwner,
+  title,
+  task,
+}: {
+  report: ReportView;
+  worktree: string | null;
+  waitingOnOwner: boolean;
+  title?: string;
+  /** The report's task, for the surface's sent state and whether it still takes input. */
+  task?: Pick<TaskView, 'state' | 'steps' | 'messages'> | null;
+}) {
   const { readonly } = useApp();
+  const sent = surfaceSent(task, report);
   const decide = report.status === 'needs-decision' && waitingOnOwner && !readonly && report.taskId !== null;
   return (
     <article className={`pw-report pw-report-${report.status}`} aria-label={title ?? 'Report'}>
@@ -192,7 +243,15 @@ export function ReportCard({ report, worktree, waitingOnOwner, title }: { report
       )}
       {report.ui && report.ui.length > 0 && (
         <Suspense fallback={<p className="muted small-text">Loading the surface...</p>}>
-          <A2uiBlock taskId={report.taskId} reportId={report.id} messages={report.ui} readonly={readonly} />
+          <A2uiBlock
+            taskId={report.taskId}
+            reportId={report.id}
+            messages={report.ui}
+            readonly={readonly}
+            sentAt={sent?.createdAt}
+            sentAction={sent?.meta}
+            closed={task && (task.state === 'done' || task.state === 'stopped') ? task.state : undefined}
+          />
         </Suspense>
       )}
     </article>

@@ -84,7 +84,7 @@ export function SessionPage({ id }: { id: string }) {
       <ErrorLine text={error} />
       {!events ? <Loading /> : <Transcript events={events} />}
       {report.data && (
-        <ReportCard report={report.data} worktree={task.data?.worktree ?? null} waitingOnOwner={!readonly && task.data?.state === 'waiting-owner'} title="Report" />
+        <ReportCard report={report.data} worktree={task.data?.worktree ?? null} waitingOnOwner={!readonly && task.data?.state === 'waiting-owner'} title="Report" task={task.data} />
       )}
     </div>
   );
