@@ -1,0 +1,147 @@
+/* The A2UI theme. The v0.9 basic catalog of @a2ui/web_core 0.14.0 renders custom elements in light DOM (no shadow
+   root): each element's styles are adopted into the document with its selectors scoped to its tag name
+   (`a2ui-basic-button .a2ui-button`), and they read --a2ui-* custom properties whose defaults sit on :where(:root) with
+   zero specificity. This file maps both onto the app's tokens: the custom properties on the .jv-a2ui wrapper, and the
+   renderer's class names (.a2ui-text, .a2ui-button, .a2ui-option-label ...) with `.jv-a2ui` in front, which outranks the
+   scoped rules and undoes what the app's own element rules (h3, label, button, input) would otherwise give them.
+   Light and dark follow the tokens. */
+
+.jv-a2ui {
+  --a2ui-color-background: var(--card);
+  --a2ui-color-on-background: var(--ink);
+  --a2ui-color-surface: var(--card);
+  --a2ui-color-on-surface: var(--ink);
+  --a2ui-color-primary: var(--ink);
+  --a2ui-color-primary-light: color-mix(in srgb, var(--ink) 86%, var(--jev));
+  --a2ui-color-primary-dark: color-mix(in srgb, var(--ink) 86%, var(--jev));
+  --a2ui-color-primary-hover: color-mix(in srgb, var(--ink) 86%, var(--jev));
+  --a2ui-color-on-primary: var(--bg);
+  --a2ui-color-secondary: var(--bg-3);
+  --a2ui-color-secondary-light: var(--bg-2);
+  --a2ui-color-secondary-dark: var(--bg-3);
+  --a2ui-color-secondary-hover: var(--bg-2);
+  --a2ui-color-on-secondary: var(--ink);
+  --a2ui-color-border: var(--edge-strong);
+  --a2ui-border-width: 1px;
+  --a2ui-border: 1px solid var(--edge-strong);
+  --a2ui-border-radius: var(--radius-sm);
+  --a2ui-color-input: var(--card);
+  --a2ui-color-on-input: var(--ink);
+  --a2ui-text-caption-color: var(--ink-3);
+  --a2ui-font-family-title: var(--font-display);
+  --a2ui-font-family-monospace: var(--font-mono);
+  --a2ui-font-size: 13.5px;
+  --a2ui-font-scale: 1.15;
+  --a2ui-line-height-body: 1.5;
+  --a2ui-line-height-headings: 1.3;
+  --a2ui-grid-base: 8px;
+  --a2ui-label-font-weight: 600;
+  --a2ui-label-font-size: 12.5px;
+
+  --a2ui-button-padding: 7px 15px;
+  --a2ui-button-margin: 4px 0 0;
+  --a2ui-button-border-radius: 999px;
+  --a2ui-button-border: 1px solid var(--edge-strong);
+  --a2ui-button-background: var(--card);
+  --a2ui-button-font-weight: 600;
+
+  --a2ui-choicepicker-gap: 8px;
+  --a2ui-choicepicker-label-font-size: 13.5px;
+  --a2ui-choicepicker-label-font-weight: 500;
+  --a2ui-choicepicker-label-color: var(--ink);
+  --a2ui-choicepicker-checkbox-size: 16px;
+  --a2ui-choicepicker-chip-border-radius: 999px;
+  --a2ui-choicepicker-chip-background-selected: var(--jev);
+  --a2ui-choicepicker-color-error: var(--danger);
+
+  --a2ui-textfield-border: 1px solid var(--edge);
+  --a2ui-textfield-border-radius: 8px;
+  --a2ui-textfield-color-border-focus: var(--jev);
+  --a2ui-textfield-color-error: var(--danger);
+  --a2ui-textfield-padding: 7px 10px;
+  --a2ui-checkbox-color-error: var(--danger);
+  --a2ui-checkbox-size: 16px;
+  --a2ui-card-border: 1px solid var(--edge);
+  --a2ui-card-border-radius: var(--radius);
+  --a2ui-card-padding: 12px 14px;
+  --a2ui-card-box-shadow: none;
+  --a2ui-divider-border: 1px solid var(--edge);
+  --a2ui-tabs-border: 1px solid var(--edge);
+  --a2ui-tabs-header-background-active: var(--ink);
+  --a2ui-tabs-header-color-active: var(--bg);
+  --a2ui-tabs-header-color: var(--ink-2);
+  --a2ui-modal-background: var(--card);
+  --a2ui-modal-border-radius: 14px;
+  --a2ui-modal-backdrop-bg: var(--backdrop);
+  --a2ui-slider-track-color: var(--bg-3);
+  --a2ui-slider-thumb-color: var(--jev);
+  --a2ui-datetimeinput-border: 1px solid var(--edge);
+  --a2ui-datetimeinput-border-radius: 8px;
+  --a2ui-datetimeinput-background: var(--card);
+
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background: var(--card-2);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  accent-color: var(--jev);
+  overflow-wrap: anywhere;
+  transition: opacity 0.2s ease;
+}
+.jv-a2ui.sent { opacity: 0.55; filter: saturate(0.6); }
+.jv-a2ui * { max-width: 100%; }
+
+/* Text: the app's h1 to h5 and p rules must not reach a step's surface (h3 is the app's mono eyebrow). */
+.jv-a2ui .a2ui-text { color: var(--ink); font-size: 13.5px; line-height: 1.5; }
+.jv-a2ui .a2ui-text :is(h1, h2, h3, h4, h5) { margin: 0; font-family: var(--font-display); font-weight: 700; letter-spacing: -0.01em; text-transform: none; color: var(--ink); line-height: 1.3; }
+.jv-a2ui .a2ui-text h1 { font-size: 19px; }
+.jv-a2ui .a2ui-text h2 { font-size: 17px; }
+.jv-a2ui .a2ui-text h3 { font-size: 15px; }
+.jv-a2ui .a2ui-text h4 { font-size: 14px; }
+.jv-a2ui .a2ui-text h5 { font-size: 13.5px; }
+.jv-a2ui .a2ui-text p { margin: 0; }
+.jv-a2ui .a2ui-text-caption { color: var(--ink-3); font-size: 12px; }
+
+/* Buttons: Jevellan's pill buttons; primary is the ink fill, default the outlined secondary. */
+.jv-a2ui .a2ui-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 34px; margin: 4px 0 0; padding: 7px 15px;
+  border: 1px solid var(--edge-strong); border-radius: 999px;
+  background: var(--card); color: var(--ink);
+  font: inherit; font-size: 13px; font-weight: 600; line-height: 1.25; white-space: nowrap; cursor: pointer;
+}
+.jv-a2ui .a2ui-button:hover { background: var(--bg-2); border-color: var(--ink-3); }
+.jv-a2ui .a2ui-button.a2ui-button-primary { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+.jv-a2ui .a2ui-button.a2ui-button-primary:hover { background: color-mix(in srgb, var(--ink) 86%, var(--jev)); }
+.jv-a2ui .a2ui-button.a2ui-button-borderless { min-height: 0; padding: 2px 0; border: 0; background: transparent; color: var(--jev-ink); }
+.jv-a2ui .a2ui-button:disabled { cursor: default; background: var(--bg-3); border-color: var(--bg-3); color: var(--ink-3); }
+.jv-a2ui .a2ui-button .a2ui-text { color: inherit; font-size: inherit; font-weight: inherit; line-height: inherit; }
+.jv-a2ui a2ui-basic-button { align-self: flex-start; }
+
+/* Choices: radio and checkbox rows at the app's 13.5 px; the app's label margin and grid do not apply here. */
+.jv-a2ui label { margin: 0; }
+.jv-a2ui .a2ui-choice-picker, .jv-a2ui .a2ui-options-group { gap: 2px; }
+.jv-a2ui .a2ui-option-label { display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 2px 4px; border-radius: 6px; color: var(--ink); font-size: 13.5px; font-weight: 500; }
+.jv-a2ui .a2ui-option-label:hover { background: var(--bg-2); }
+.jv-a2ui .a2ui-option-input { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--jev); flex: none; }
+.jv-a2ui .a2ui-chip { min-height: 28px; padding: 3px 11px; border: 1px solid var(--edge-strong); background: var(--card); color: var(--ink-2); font-size: 12px; font-weight: 550; }
+.jv-a2ui .a2ui-chip.a2ui-chip-selected { border-color: var(--jev); background: var(--jev-soft); color: var(--jev-ink); }
+.jv-a2ui .a2ui-filter-input { min-height: 34px; }
+.jv-a2ui .a2ui-checkbox-container { margin: 0; }
+.jv-a2ui label.a2ui-checkbox { font-size: 13.5px; font-weight: 500; color: var(--ink); }
+
+/* Fields, cards, dividers, tabs: the app's inputs and cards. */
+.jv-a2ui .a2ui-textfield, .jv-a2ui .a2ui-date-time-input { min-height: 36px; border: 1px solid var(--edge); border-radius: 8px; background: var(--card); color: var(--ink); font-size: 13.5px; }
+.jv-a2ui .a2ui-textfield:focus, .jv-a2ui .a2ui-date-time-input:focus { border-color: var(--jev); box-shadow: 0 0 0 3px var(--jev-soft); }
+.jv-a2ui a2ui-basic-textfield label, .jv-a2ui .a2ui-date-time-label, .jv-a2ui .a2ui-slider-label { color: var(--ink-2); font-size: 12.5px; font-weight: 550; }
+.jv-a2ui .a2ui-card { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--card); }
+.jv-a2ui .a2ui-divider { border-color: var(--edge); }
+.jv-a2ui .a2ui-tab-button { border-radius: 999px; font-size: 12.5px; }
+.jv-a2ui .a2ui-tab-button-active { background: var(--ink); color: var(--bg); }
+.jv-a2ui .a2ui-image { max-width: 100%; border-radius: 8px; }
+.jv-a2ui .a2ui-error-message { color: var(--danger); font-size: 12px; }
