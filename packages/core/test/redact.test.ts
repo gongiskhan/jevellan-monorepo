@@ -65,6 +65,13 @@ test('the process redactor picks up a key file added later', () => {
   assert.equal(redact(`v ${later}`), `v ${REDACTED}`);
 });
 
+test('the UI password ($JV_HOME/ui-password) is masked once it exists (M-044)', () => {
+  const password = 'ABCDEFGHJKMNPQRSTVWX';
+  assert.equal(redact(`login with ${password}`), `login with ${password}`);
+  writeFileSync(join(home, 'ui-password'), `${password}\n`, { mode: 0o600 });
+  assert.equal(redact(`login with ${password}`), `login with ${REDACTED}`);
+});
+
 test('OAuth logins in provider homes and archived login copies are masked, value by value', () => {
   // Made-up login files shaped like Codex auth.json and Claude .credentials.json.
   const codexAccess = 'fake-codex-access-token-aaaaaaaaaaaa';

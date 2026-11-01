@@ -431,3 +431,23 @@ request id, so `jv job run` of that kind returns it with exit 0 until `--force`.
 - M9's Claude Code session runs with HOME a folder of the run and claude-main's token of the temporary home in its
   environment: with the owner's own login it would record the run's folder in the owner's `~/.claude.json`, which
   brief section 1 says jv never writes.
+
+## M-044 The UI server
+
+- jevellan-ui takes its control-plane routes from jevellan-mcp's operations table, injected by `jv ui` (the server
+  sees a structural `UiOperation`, which keeps it off any zod major), with `nextRuns` from jevellan-scheduler and the
+  memory list from jevellan-memory; a route whose operation or helper is missing answers exit 2 "not available".
+- `--readonly` refuses every POST with 403 except sign-in and sign-out, and never tails the coordinators (tailing
+  writes events).
+- Tokens: valid while `last_seen_at` is under 30 days old, the window sliding with use, refreshed at most every 5
+  minutes (every write moves `PRAGMA data_version` and makes every open page refetch); sign-out and
+  `--password-reset` set `last_seen_at` to the epoch instead of deleting the row. The wrong-password limit is per
+  socket address; forwarded headers are not trusted. Every POST must be `application/json` (with SameSite=Lax and no
+  CORS preflight answered, the CSRF defence).
+- The page's CSP allows inline style attributes only (`style-src-attr 'unsafe-inline'`), because the A2UI basic
+  catalog's Text sets `style="flex: N"`; inline style elements and scripts stay refused.
+- `run/ui.pid` is JSON `{pid, startedAt, url, readonly}`; a file whose pid is gone, or whose pid was reused by a
+  later process, is taken over. `ui.log` gets one line per request (method, path with query keys and no values,
+  status, ms). `/evidence/` needs the cookie too.
+- The redactor also masks the content of `$JV_HOME/ui-password`, which lives next to the store rather than in
+  `secrets/`, and M16 searches for it.

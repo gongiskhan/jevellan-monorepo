@@ -8,7 +8,7 @@
 // Usage: node acceptance/m16-no-leaks.mjs
 // Exit 0 when every check passes, 1 otherwise. Writes acceptance/results/m16.json.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ACCEPT_DIR, CHECKOUT, check, finish, HOME, leakCheck, log, NODE, note, REAL_JV_HOME, run, runJourney, SANDBOX, SANDBOX_CLONE } from './lib.mjs';
 
@@ -34,10 +34,12 @@ async function main() {
   note(`checked: ${targets.map((t) => t.replace(HOME, '~')).join(', ')}`);
 
   await check('no secret file content and no token variable in the store, logs, evidence or acceptance/', () => {
-    const r = leakCheck(targets, { secretsDir: join(REAL_JV_HOME, 'secrets'), literals: TOKEN_VARIABLES });
+    // The UI password lives next to the store, not in secrets/ (M-044): its value is searched for too.
+    const uiPassword = existsSync(join(REAL_JV_HOME, 'ui-password')) ? [readFileSync(join(REAL_JV_HOME, 'ui-password'), 'utf8').trim()].filter((v) => v.length >= 6) : [];
+    const r = leakCheck(targets, { secretsDir: join(REAL_JV_HOME, 'secrets'), literals: [...TOKEN_VARIABLES, ...uiPassword] });
     return {
       ok: r.secrets > 0 && r.leaks.length === 0 && r.errors.length === 0,
-      detail: `${r.secrets} secret files and 2 literals against ${r.checked.length} paths${r.leaks.length ? `; found: ${r.leaks.map((l) => `${l.secret} in ${l.file}`).join(', ')}` : ''}${r.errors.length ? `; errors: ${r.errors.join(', ')}` : ''}`,
+      detail: `${r.secrets} secret files, the UI password${uiPassword.length ? '' : ' (none yet)'} and 2 token names against ${r.checked.length} paths${r.leaks.length ? `; found: ${r.leaks.map((l) => `${l.secret} in ${l.file}`).join(', ')}` : ''}${r.errors.length ? `; errors: ${r.errors.join(', ')}` : ''}`,
     };
   });
 

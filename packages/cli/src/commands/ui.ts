@@ -9,9 +9,9 @@
 // - --readonly: no action is offered or accepted (every POST but sign-in is refused).
 // - Prints the URL once (with --json: {url, port, bind, readonly, passwordFile}) and keeps running.
 //
-// The JSON routes that mirror control-plane tools are served from jevellan-mcp's operations table; the schedule
-// preview from jevellan-scheduler's nextRuns. This package does not depend on those two yet, so jv ui warns about the
-// routes it cannot serve (see the jevellan-ui server's header).
+// The JSON routes that mirror control-plane tools are served from jevellan-mcp's operations table (the same table the
+// MCP serves, so a route answers what the tool answers); the schedule preview from jevellan-scheduler's nextRuns. jv ui
+// still warns about any route an operation is missing for (none in this build).
 
 import { homedir } from 'node:os';
 import type { CommandIo, ParsedArgs } from '../command.js';
@@ -30,6 +30,8 @@ import {
   type UiOperation,
 } from 'jevellan-ui/server';
 import { memory } from '../setup.js';
+import { operations as mcpOperations } from 'jevellan-mcp/tools';
+import { nextRuns } from 'jevellan-scheduler/cron';
 
 /** A path for people: the home folder as ~ (display only). */
 export function displayPath(file: string, home: string = homedir()): string {
@@ -53,8 +55,8 @@ export function listMemories(store: Store, filter: { project?: string; kind?: st
   return { memories };
 }
 
-/** The control-plane operations the UI serves. None are wired into this build yet (see the header). */
-const operations: readonly UiOperation[] = [];
+/** The control-plane operations the UI serves: jevellan-mcp's table. */
+const operations: readonly UiOperation[] = mcpOperations;
 
 export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
   const port = flagInt(args, 'port') ?? DEFAULT_PORT;
@@ -66,6 +68,7 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
     readonly,
     operations,
     listMemories,
+    nextRuns,
     pidFile: uiPidFile(),
     passwordReset: flagBool(args, 'password-reset'),
   });

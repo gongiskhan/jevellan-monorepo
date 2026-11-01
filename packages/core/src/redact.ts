@@ -1,7 +1,7 @@
 // The redactor: masks every secret jv knows about before text is written to events, reports or logs.
 //
-// It loads the contents of every file in ~/.jv/secrets and of every keyFile / tokenFile that providers.json names
-// (including jev.keyFile), and replaces each value with [redacted]. Values are never printed, logged or returned;
+// It loads the contents of every file in ~/.jv/secrets, of ~/.jv/ui-password (M-044) and of every keyFile /
+// tokenFile that providers.json names (including jev.keyFile), and replaces each value with [redacted]. Values are never printed, logged or returned;
 // only the masked text leaves this module. A secret file may hold one value, or several lines (each line is masked
 // on its own, and so is the value part of a NAME=value line).
 //
@@ -26,6 +26,8 @@ export const ARCHIVED_CREDENTIALS_DIR = 'credentials';
 
 export interface RedactorSources {
   secretsDir?: string;
+  /** The UI password file (default $JV_HOME/ui-password). */
+  uiPasswordFile?: string;
   providersFile?: string;
   /** Folder of archived login files, default ~/.jv/archive/credentials. */
   archivedCredentialsDir?: string;
@@ -164,6 +166,8 @@ export class Redactor {
       // no secrets folder yet
     }
     for (const f of secretFilesFromProviders(providersFile)) files.add(f);
+    // The UI's sign-in password lives next to the store, not in secrets/ (brief section 7); it is masked too (M-044).
+    files.add(sources.uiPasswordFile ?? join(paths.home, UI_PASSWORD_FILE));
     const values: string[] = [];
     for (const f of files) {
       const content = readIfFile(f);
@@ -224,7 +228,7 @@ function stampOf(): string {
       return undefined;
     }
   };
-  for (const p of [paths.secretsDir, paths.providersFile]) {
+  for (const p of [paths.secretsDir, paths.providersFile, join(paths.home, UI_PASSWORD_FILE)]) {
     const st = stat(p);
     parts.push(st ? `${st.mtimeMs}:${st.size}` : '-');
   }
@@ -248,6 +252,9 @@ function stampOf(): string {
   }
   return parts.join('|');
 }
+
+/** The UI's password file, below JV_HOME. */
+export const UI_PASSWORD_FILE = 'ui-password';
 
 /** The process-wide redactor for this JV_HOME, reloaded when the secret files change. */
 export function defaultRedactor(): Redactor {
