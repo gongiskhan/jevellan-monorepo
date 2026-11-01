@@ -1,6 +1,7 @@
 // The improver (brief section 10): the memory plan applied with source improver:<J> (merge supersedes, archive keeps
-// rows, add, expire, unknown ids skipped, the 50 operation cap), the documentation file list, and the project rule of
-// improve-skills.
+// rows, add, expire, unknown ids skipped, a refused operation skipped on its own, the 50 operation cap), the inputs
+// (the tasks a plan created count, the jobs' own work tasks do not), the documentation file list, and the project
+// rule of improve-skills.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -59,6 +60,42 @@ describe('improve-memory', () => {
     assert.equal((r.skipped as Array<{ reason: string }>).filter((s) => s.reason === 'over 50 operations').length, 5);
   });
 
+  test('a merge that names its keep id in archive, repeats an id or has nothing to merge, or an operation memory refuses, is skipped alone', () => {
+    const c = memory.remember(store.db, { scope: P, kind: 'lesson', text: 'tests are faster with --test-concurrency', source: 'owner' }).id;
+    const d = memory.remember(store.db, { scope: P, kind: 'lesson', text: 'run tests concurrently, they are faster', source: 'owner' }).id;
+    const e = memory.remember(store.db, { scope: P, kind: 'lesson', text: 'a lesson nobody merges', source: 'owner' }).id;
+    const r = I.applyMemoryPlan(store, project, job, {
+      merge: [
+        { keep: c, archive: [d, d, c], text: null },
+        { keep: e, archive: [] },
+        { keep: e, archive: [], text: 'x'.repeat(2001) },
+      ],
+      add: [{ scope: 'project', kind: 'fact', text: 'the sandbox has 42 unit tests', tags: [] }],
+    });
+    assert.deepEqual(r.merged, [{ keep: c, archived: [d] }]);
+    assert.equal(memory.get(store.db, c)!.text, 'tests are faster with --test-concurrency', 'a null text keeps the wording');
+    assert.deepEqual((r.skipped as Array<{ op: string }>).map((x) => x.op), [`merge ${e}`, `merge ${e}`]);
+    assert.equal((r.skipped as Array<{ reason: string }>)[0]!.reason, 'nothing to merge');
+    assert.match((r.skipped as Array<{ reason: string }>)[1]!.reason, /text must be 1 to 2000 characters/);
+    assert.equal(memory.get(store.db, e)!.text, 'a lesson nobody merges');
+    assert.equal((r.added as string[]).length, 1, 'the operations after a refused one still apply');
+  });
+
+  test('the inputs count the tasks a plan created and leave out the jobs\' own work tasks', () => {
+    const done = (requestId: string, origin: string, title: string) => {
+      const t = store.createTask({ project_id: project.id, request_id: requestId, kind: 'single', title, task_text: 'x', workflow_json: '{"steps":[]}', state: 'done', state_reason: 'landed', origin }).row;
+      const step = store.createStep({ task_id: t.id, ordinal: 1, duty: 'implement', state: 'done' }).row;
+      const run = store.createSession({ project_id: project.id, task_id: t.id, step_id: step.id, request_id: `run-${requestId}`, kind: 'step', runtime: 'llm', provider: 'p', model: 'm', effort: 'low', cwd: '/tmp' }).row;
+      store.createReport({ session_id: run.id, step_id: step.id, task_id: t.id, status: 'done', summary: `${title}: done` });
+      return t.id;
+    };
+    const planned = done('plan:J0000PL:0', 'planner:J0000PL', 'CSV upload endpoint');
+    const work = done('job:J0000WK', 'improver:J0000WK', 'Tidy what sandbox remembers');
+    const reports = I.memoryJobInput(store, project, job).reports.map((x) => x.task);
+    assert.ok(reports.includes(planned));
+    assert.ok(!reports.includes(work));
+  });
+
   test('the work task carries the memories and the recent reports', async () => {
     const spec = await I.improveMemoryHandler.workTask(store, job, project);
     assert.match(spec.text, /^You are tidying what this project remembers\. Merge memories that say the same thing/);
@@ -75,6 +112,60 @@ describe('improve-docs and improve-skills', () => {
     writeFileSync(join(repo, 'docs', 'guide', 'setup.md'), 'x\n');
     writeFileSync(join(repo, 'docs', 'decisions.md'), 'x\n');
     assert.deepEqual(I.documentationFiles(repo), ['README.md', 'docs/decisions.md', 'docs/guide/setup.md']);
+  });
+
+  test('finish lands the work that changed documentation; a change outside it, or no change, is not landed', async () => {
+    const lands: string[] = [];
+    let answer: 'land' | 'ask-owner' | 'throw' = 'land';
+    const handlers = I.makeImproverHandlers({
+      land: async (s, taskId, options) => {
+        assert.deepEqual(options, { auto: true });
+        lands.push(taskId);
+        if (answer === 'throw') throw new Error('git merge failed: conflict in README.md');
+        const row = s.createLanding({ task_id: taskId, route: answer, state: answer === 'land' ? 'landed' : 'asked', reason: answer === 'land' ? 'small documentation change' : 'touches a risky area' });
+        return { route: answer, state: row.state, reason: row.reason, taskId };
+      },
+    });
+    const docs = handlers.find((h) => h.kind === 'improve-docs')!;
+    const skills = handlers.find((h) => h.kind === 'improve-skills')!;
+    const docsJob = store.createJob({ project_id: project.id, kind: 'improve-docs', request_id: 'improve-docs:sandbox:land-test' }).row;
+    const work = (files: string[], summary = 'Updated the README.') => {
+      const t = store.createTask({ project_id: project.id, request_id: `job:land-${Math.random()}`, kind: 'single', title: 'Docs', task_text: 'x', workflow_json: '{"steps":[]}', state: 'done', state_reason: 'step document done', origin: `improver:${docsJob.id}` }).row;
+      const step = store.createStep({ task_id: t.id, ordinal: 1, duty: 'document', state: 'done' }).row;
+      const run = store.createSession({ project_id: project.id, task_id: t.id, step_id: step.id, request_id: `run-land-${t.id}`, kind: 'step', runtime: 'llm', provider: 'p', model: 'm', effort: 'low', cwd: '/tmp' }).row;
+      const r = store.createReport({ session_id: run.id, step_id: step.id, task_id: t.id, status: 'done', summary, changed_files_json: JSON.stringify(files) }).row;
+      return { task: t, report: { id: r.id, sessionId: run.id, taskId: t.id, stepId: step.id, status: 'done' as const, summary, changedFiles: files, screenshots: [], createdAt: r.created_at } };
+    };
+
+    const a = work(['README.md', 'docs/setup.md']);
+    const ra = await docs.finish(store, docsJob, a.report, a.task);
+    assert.deepEqual(lands, [a.task.id]);
+    assert.deepEqual(ra.landing, { route: 'land', state: 'landed', commit: null, reason: 'small documentation change' });
+    assert.equal(ra.summary, '2 documentation files changed; landing land (landed)');
+    // A second finish of the same task does not land it again.
+    await docs.finish(store, docsJob, a.report, a.task);
+    assert.equal(lands.length, 1);
+
+    const b = work(['README.md', 'src/app.ts']);
+    const rb = await docs.finish(store, docsJob, b.report, b.task);
+    assert.equal(lands.length, 1, 'a change outside the documentation is not landed');
+    assert.equal(rb.notLanded, 'changed files outside the documentation: src/app.ts');
+
+    const c = work([], 'Documentation is current');
+    const rc = await docs.finish(store, docsJob, c.report, c.task);
+    assert.deepEqual([rc.current, rc.landing, rc.summary, lands.length], [true, null, 'Documentation is current', 1]);
+
+    answer = 'throw';
+    const d = work(['CHANGELOG.md']);
+    const rd = await docs.finish(store, docsJob, d.report, d.task);
+    assert.deepEqual(rd.landing, { route: 'none', state: 'error', commit: null, reason: 'git merge failed: conflict in README.md' });
+
+    answer = 'ask-owner';
+    const e = work(['.apm/skills/jevellan-router/SKILL.md'], 'Changed the router.\n\n```json\n{"router":{"before":"held-out 8/10","after":"held-out 9/10"}}\n```');
+    const re = await skills.finish(store, docsJob, e.report, e.task);
+    assert.deepEqual((re.landing as { route: string; state: string }).route, 'ask-owner');
+    assert.deepEqual(re.agreement, { router: { before: 'held-out 8/10', after: 'held-out 9/10' } });
+    assert.equal(re.summary, '1 skill files changed; landing ask-owner (asked)');
   });
 
   test('improve-skills runs only on jevellan-skills, which must be registered', () => {
