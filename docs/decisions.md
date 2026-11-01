@@ -364,3 +364,13 @@ reads). The daemons' pids must also be the phase 0 ones.
 M16 greps for the brief's two token variable names, but the journey file itself lives in `acceptance/`, one of the
 places it greps, and its result file is written there. The journey builds the two names from parts, labels them
 "literal 1" and "literal 2" in its output, and never prints them, so a match can only come from a real leak.
+
+## M-038 Standing preferences: a preference memory is the better home (asked of the skills, not done)
+
+The coordinator skill tells the coordinator to keep the owner's standing preferences in `notes.md`, which only the
+coordinator reads. The monorepo would like them as `preference` memories (`jv memory add --scope global --kind
+preference "..."`, or `--scope project`), because every worker and coordinator prompt carries the memory brief, so
+the preference reaches every step. This repository changes no skill body (brief section 11); the README and this
+entry record the request, and the skills run decides when to adopt it. The planner and improver templates
+(`packages/planner/templates`, `packages/improver/templates`) are likewise candidates to become duty skills
+(`jevellan-duty-planner`, `jevellan-duty-improve-memory`, and so on) once the owner has seen them work (M-018).
