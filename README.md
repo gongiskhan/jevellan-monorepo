@@ -71,6 +71,9 @@ first open (keeping `store.sqlite.v1.bak`), and the skills runtime refuses a sch
    and name them in `~/.jv/providers.json` (`jev.keyFile`, a provider's `tokenFile` or `keyFile`).
 3. `jv providers check`: every enabled provider's login and usage, and whether Jev answers.
 4. `jv project add <path> [--name N]`, then check `testCommand` and `devCommand` in `~/.jv/projects/<name>/project.json`.
+   A project's own MCP servers (`mcpServers` there) name their secrets as files under `~/.jv/secrets` (mode 600):
+   `envFiles` for a stdio server's environment, `headerFiles` or `bearerTokenFile` for an http server. A key written
+   into project.json itself is refused.
 5. `jv coordinator start --project <name>` and talk to it in the UI's project page, or `tmux attach -t '=jv-coord-<name>'`.
 6. `jv ui` and open http://127.0.0.1:7071 (the password is in `~/.jv/ui-password`, shown once at the first start).
 7. `jv bot start` (or install it as a service, below) so the queue, schedules and jobs keep moving.
