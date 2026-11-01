@@ -49,7 +49,11 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
   report: { module: './commands/report.js', usage: 'jv report S' },
   tail: { module: './commands/tail.js', booleans: ['follow'], usage: 'jv tail S [--follow]' },
   attach: { module: './commands/attach.js', usage: 'jv attach S' },
-  ui: { module: './commands/ui.js', usage: 'jv ui [--port 7071] [--bind ADDRESS]' },
+  ui: {
+    module: './commands/ui.js',
+    booleans: ['readonly', 'password-reset'],
+    usage: 'jv ui [--port 7071] [--bind 127.0.0.1] [--readonly] [--password-reset]',
+  },
   coordinator: {
     module: './commands/coordinator.js',
     usage: 'jv coordinator start|stop|restart|status --project N | jv coordinator message --project N "text"',
