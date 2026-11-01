@@ -219,6 +219,10 @@ jv schedule add --project N --name "..." --cron "M H DoM Mon DoW" [--tz Zone]
 jv schedule list [--project N] | jv schedule show S | jv schedule run S | jv schedule pause S | jv schedule resume S
 ```
 
+`S` is a schedule id, or its name together with `--project N` (names are unique within a project). `jv schedule run`
+fires now without moving the next run; when Jev refuses to start the task it made, the task stays queued with Jev's
+reason (a warning, not an error) and the bot retries it.
+
 Cron is five fields (numbers, ranges, lists and steps; no names; day of week 0 to 6, 0 Sunday) in the schedule's time
 zone (this machine's by default), daylight saving as Vixie cron handles it. The bot fires due schedules; a slot
 missed while the bot was down fires once, late. Examples you may add:
@@ -236,7 +240,7 @@ jv schedule add --project jevellan-skills --name "Skills" --cron "0 5 * * 1" --j
 
 ```
 jv goal add --project N --title T --text "..." [--priority 1..5]
-jv goal list [--project N] | jv goal show G | jv goal done G | jv goal pause G
+jv goal list [--project N] [--state open|done|paused] | jv goal show G | jv goal done G | jv goal pause G
 jv job run plan --project N [--force]
 ```
 

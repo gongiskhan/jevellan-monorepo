@@ -55,30 +55,38 @@ export PATH="$HOME/.nvm/versions/node/v22.22.0/bin:$PATH"
 ```
 package.json            private root: workspaces, scripts build, typecheck, test, lint, scan:secrets, journeys
 tsconfig.base.json      strict, noUncheckedIndexedAccess, noImplicitOverride, NodeNext, ES2022, ES2023 lib (M-010)
-tsconfig.json           project references: packages/core, packages/ui, packages/cli (tsc -b)
+tsconfig.json           project references of every package (tsc -b)
 eslint.config.mjs       lint (copied from gongiskhan/jevellan at 8e2788ec, adjusted)
 bin/jv.mjs              jv from this checkout: Node check, then packages/cli/dist/bin.js
+docs/architecture.md    how the packages fit together
 docs/decisions.md       M-001 onwards, append-only
 docs/findings.md        verified facts about this machine and the packages, dated, append-only
-acceptance/             acceptance journeys M1 to M17 and their RESULTS.md; baseline/ holds the phase 0 records
+acceptance/             acceptance journeys M1 to M17, lib.mjs, run-all.mjs and RESULTS.md; baseline/ holds the
+                        phase 0 records; results/ and shots/ are written by the journeys
 scripts/                secret-scan.mjs, bump-version.mjs, sync-from-skills.mjs and their tests in scripts/test/
-packages/core/          jevellan-core: the lifted engine (store, tasks, Jev placement, landing, runtimes, coordinator)
+packages/core/          jevellan-core: the lifted engine (store, tasks, Jev placement, landing, runtimes, coordinator,
+                        reconcile, jobs, the bot's configuration and status view, providers check)
 packages/cli/           jevellan-cli: the jv command (src/cli.ts command table, src/command.ts, src/commands/*.ts)
-packages/ui/            jevellan-ui: for now the lifted read-only viewer: server/ (TypeScript), viewer/ (browser files)
+packages/memory/        jevellan-memory: memories (FTS5), the worker tools jv_remember and jv_recall, the prompt block
+packages/mcp/           jevellan-mcp: the operations table (src/tools.ts) served as MCP tools over stdio and HTTP
+packages/ui/            jevellan-ui: server/ (node:http, the routes over the operations table), web/ (the React app,
+                        built by Vite to dist/web), test/ (server tests), test-web/ (Playwright checks, mock server),
+                        viewer/ (the lifted read-only viewer)
+packages/bot/           jevellan-bot: the tick loop, its lock, health endpoint, log, housekeeping and service files
+packages/scheduler/     jevellan-scheduler: cron (five fields, Vixie DST) and schedules
+packages/planner/       jevellan-planner: goals and the plan job
+packages/improver/      jevellan-improver: improve-memory, improve-docs and improve-skills jobs
 ```
 
-Packages that later phases add: `packages/mcp` (jevellan-mcp), `packages/memory` (jevellan-memory), `packages/bot`
-(jevellan-bot), `packages/scheduler` (jevellan-scheduler), `packages/planner` (jevellan-planner) and
-`packages/improver` (jevellan-improver). A package joins the root `workspaces` list and `tsconfig.json`'s references
-when it gets its `package.json`.
-
-Dependency direction, declared in each `package.json` (a package lists only what it imports): `jevellan-core`
-depends on nothing in the repository; `jevellan-ui` depends on `jevellan-core`; `jevellan-cli` depends on
-`jevellan-core` and `jevellan-ui`, and loads each command module lazily from its command table, so only `jv ui`
-loads `jevellan-ui/server`. The brief's section 2 gives the direction for the later packages: memory depends on
-nothing here; scheduler, planner, improver and mcp on core (and memory where they use it); bot on core, memory,
-scheduler, planner and improver; ui on all of those but bot, which it only observes through the store; cli on
-everything, loading ui, bot and mcp lazily. Other packages import core's modules by subpath,
+Dependency direction, declared in each `package.json` (a package lists only what it imports, and
+`packages/core/test/deps.test.ts` checks it): `jevellan-core` and `jevellan-memory` depend on nothing in the
+repository; `jevellan-scheduler` on core; `jevellan-planner` and `jevellan-improver` on core and memory;
+`jevellan-mcp` on core, memory, scheduler, planner and improver (its operations call them, M-019); `jevellan-ui` on
+core and scheduler (it serves the operations table it is given, so it never imports mcp or bot, and observes the bot
+only through the store); `jevellan-bot` on core, memory, scheduler, planner and improver; `jevellan-cli` on
+everything, loading each command module lazily from its command table, so only `jv ui` loads `jevellan-ui/server`
+and only `jv mcp` loads `jevellan-mcp/serve`. Code two packages need that one of them may not import moves into core
+(the bot's configuration and status view, M-057; the jobs machinery, M-040). Other packages import core's modules by subpath,
 `import { openStore } from 'jevellan-core/store'` (`jevellan-core/<module>` resolves to `dist/<module>.js`, M-008).
 
 Where the lift put the runtime's files (M-008): `src/cli.ts`, `src/command.ts` and `src/commands/*` in
@@ -93,10 +101,11 @@ Run at the repository root unless a folder is named.
 
 ```sh
 npm ci                                   # install (node_modules at the root; workspace links are relative)
-npm run build                            # tsc -b --pretty false: every package's src/ to dist/
+npm run build                            # tsc -b --pretty false, then the web app (Vite) to packages/ui/dist/web
 npm run typecheck                        # the same command; the compiler is the main lint
 npm test                                 # build, then every workspace's npm test
 (cd packages/core && npm test)           # one package: tsc -p tsconfig.test.json, then node --test over dist-test/
+(cd packages/ui && npm run test:web)     # the web app's Playwright checks against test-web/mock-server.mjs
 npm run lint                             # eslint .
 npm run scan:secrets                     # node scripts/secret-scan.mjs: tracked files, exit 1 naming file:line
 node --test "scripts/test/*.test.mjs"    # the scripts' own tests (Node 22 takes a glob here, not a folder)
