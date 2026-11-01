@@ -30,6 +30,7 @@
     "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
   },
   "dependencies": {
+    "jevellan-bot": "0.1.0",
     "jevellan-core": "0.1.0",
     "jevellan-improver": "0.1.0",
     "jevellan-mcp": "0.1.0",

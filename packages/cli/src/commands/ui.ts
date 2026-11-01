@@ -72,6 +72,16 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
     pidFile: uiPidFile(),
     passwordReset: flagBool(args, 'password-reset'),
   });
+  // Armed before the ready line: a signal sent as soon as the URL is read still closes the server and its pid file.
+  const stopped = new Promise<void>((resolve) => {
+    const stop = (): void => {
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+      resolve();
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+  });
   if (ui.newPassword) io.warn(`UI password written to ${displayPath(ui.passwordFile)} (shown once): ${ui.newPassword}`);
   const missing = missingOperations(operations);
   if (missing.length) {
@@ -88,15 +98,7 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
   } else {
     io.info(`Serving on ${ui.bind}: anyone who can reach this address sees the sign-in page.`);
   }
-  await new Promise<void>((resolve) => {
-    const stop = (): void => {
-      process.off('SIGINT', stop);
-      process.off('SIGTERM', stop);
-      resolve();
-    };
-    process.on('SIGINT', stop);
-    process.on('SIGTERM', stop);
-  });
+  await stopped;
   await ui.close();
   return 0;
 }

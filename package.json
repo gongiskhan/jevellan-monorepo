@@ -18,6 +18,7 @@
     "packages/scheduler",
     "packages/planner",
     "packages/improver",
+    "packages/bot",
     "packages/mcp",
     "packages/ui",
     "packages/cli"

@@ -79,6 +79,14 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
     booleans: ['stdio', 'http', 'token-reset'],
     usage: 'jv mcp [--stdio] [--http [--port 7072] [--bind 127.0.0.1]] [--token-reset]',
   },
+  // jevellan-bot and jevellan-scheduler (brief sections 8 and 9).
+  bot: { module: './commands/bot.js', usage: 'jv bot start|stop|status|tick|install-service' },
+  schedule: {
+    module: './commands/schedule.js',
+    booleans: ['visible'],
+    usage:
+      'jv schedule add|list|show|run|pause|resume ...  (add: --project N --name "..." --cron "..." [--tz Z] (--task-kind K [--duty D] --title T --text "..." [--visible] | --job J); list: [--project N]; show|run|pause|resume: S [--project N])',
+  },
   version: { module: './commands/version.js', usage: 'jv --version', internal: true },
 
   bootstrap: { module: './commands/bootstrap.js', usage: 'jv bootstrap [--skills PATH] [--node PATH]', internal: true },

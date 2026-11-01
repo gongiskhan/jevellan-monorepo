@@ -122,4 +122,20 @@ describe('fire', () => {
     assert.deepEqual(view.nextRuns, ['2026-12-02T03:00:00.000Z', '2026-12-03T03:00:00.000Z', '2026-12-04T03:00:00.000Z']);
     assert.equal(view.project, 'sandbox');
   });
+  test('run now counts a task Jev refused to start as created and reports the refusal; any other error is the run result', async () => {
+    const s = store.getSchedule(S.requireSchedule(store, 'Nightly tests', 'sandbox').id)!;
+    const heard: string[] = [];
+    const refusing = S.runNowCreator((m) => heard.push(m), async () => {
+      throw new JvError('Jev refused to start T000099: no slot', 2, { taskId: 'T000099' });
+    });
+    const r = await S.runNow(store, s, new Date('2026-11-09T10:00:00Z'), { createTask: refusing });
+    assert.equal(r.result, 'created T000099 (run now)');
+    assert.deepEqual(heard, ['Jev refused to start T000099: no slot']);
+    const failing = S.runNowCreator(undefined, async () => {
+      throw new JvError('no project sandbox', 3);
+    });
+    const failed = await S.runNow(store, s, new Date('2026-11-09T11:00:00Z'), { createTask: failing });
+    assert.equal(failed.result, 'error: no project sandbox');
+    assert.equal(failed.task, undefined);
+  });
 });

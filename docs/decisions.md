@@ -451,3 +451,134 @@ request id, so `jv job run` of that kind returns it with exit 0 until `--force`.
   status, ms). `/evidence/` needs the cookie too.
 - The redactor also masks the content of `$JV_HOME/ui-password`, which lives next to the store rather than in
   `secrets/`, and M16 searches for it.
+
+## M-045 The bot's lock and its pid row
+
+`$JV_HOME/run/bot.lock` is created with O_EXCL and holds JSON `{pid, command, startedAt}` (command `start` or `tick`);
+`doctor.readPidFile` reads the pid from it. A second taker gets exit 2 "bot already running (pid N)". A lock is stale
+when its pid is gone, is a zombie, or is a live process whose command line does not mention `bot` (a reused pid). A
+lock file without a readable pid counts as being written for 10 s, and as stale after that. A stale lock is taken over
+with a log line. Two takeovers at once are serialised by a second O_EXCL file, `bot.lock.takeover`, held only for the
+takeover itself. A holder removes the lock only while it still holds its own pid. When `jv bot start` or `jv bot tick`
+ends, it clears meta `bot:pid` (if that row still names its pid) and keeps the heartbeat time, so the store says at
+once that no bot runs, even when the host process goes on living.
+
+## M-046 Everything the bot creates starts through its admission (extends M-040 to schedules)
+
+The bot fires schedules and steps jobs with a task creator that passes `start: false`. A schedule's task is created
+queued, and reconcile admits it at the next tick under the limits, quiet hours and M-026's retry rules. A Jev refusal
+therefore never turns a created task into a schedule error. M11's 75 s allows up to 60 s to the minute boundary plus
+one 15 s tick.
+
+## M-047 jv bot tick is one tick of the bot, under its lock
+
+`jv bot tick` takes the bot lock (command `tick`) and refuses with exit 2 while a bot runs, so it never runs beside
+the loop or overwrites its heartbeat. It writes bot.json's defaults when the file is missing, as a first start does.
+Its exit is 0 whatever the sub-steps did; their errors are in the summary and in `bot:last_error`.
+
+## M-048 Housekeeping
+
+Housekeeping runs when meta `bot:housekeeping_at` is missing (the first tick of a home) or an hour old; the time is
+recorded first, so a failing housekeeping retries in an hour, not every tick. Its probe covers only the enabled
+providers whose last recorded probe (`provider_auth`) was ready, through `jevellan-core/providers-check`'s
+`probeProviders`. It records login state and probe or local usage rows as `jv providers check` does, but reads no model
+list, asks Jev nothing and never writes providers.json: changing the menu stays the owner's command. There is no probe
+at all without a providers.json. Then `gc(store)` (each project's retention, D-051), then the log trim. The three parts
+are isolated from each other.
+
+## M-049 The bot's health endpoint
+
+Only GET (and HEAD) `/health` is served. The body has exactly the keys ok, heartbeatAgeSeconds, running, queued,
+version, in that order. `ok` is M-023's alive rule (heartbeat younger than max(60 s, 3 ticks)); the status is 200 when
+ok and 503 otherwise, so a hung tick loop is visible. Everything else is 404 with an empty body. A taken port refuses
+the start with exit 2 and doctor's fix text. A first heartbeat (tick 0) is written before the endpoint listens, so it
+never answers without one.
+
+## M-050 Stopping the bot within 10 s
+
+SIGTERM and SIGINT let the running sub-step finish and skip the rest of the tick, then release the lock, close the
+endpoint and the store, and exit 0. If the sub-step has not finished 9 s after the signal (a slow Jev call during an
+admission), the lock is released and the endpoint closed anyway, and the process exits 0. The abandoned sub-step loses
+nothing: every write is its own transaction, and M-024 recovers a run whose spawner died. `jv bot stop` sends SIGTERM
+to the pid in the lock, waits up to 10 s, and exits 2 if the bot did not go. When a service file exists it adds a hint
+that launchd's KeepAlive will restart the bot.
+
+## M-051 bot.json
+
+The file is validated with zod, strict at every depth (an unknown key exits 2 naming its dotted path). A key left out
+takes its default. Refused: `tickSeconds` outside 1..3600; limits outside 1..100; `quietHours` times that are not
+HH:MM, or `from` equal to `to`; a `health.bind` that is a wildcard or is not an IP address or localhost; `logLines`
+under 100. A quiet window whose `from` is later than its `to` runs past midnight, with `from` in and `to` out, in the
+process's local time. The running bot rereads bot.json when its modification time changes: limits, quiet hours, tick
+and log size apply from the next tick, an invalid edit is logged (and recorded in `bot:last_error`) while the running
+configuration is kept, and a new health bind or port needs a restart.
+
+## M-052 The bot's log
+
+`$JV_HOME/logs/bot.log` gets one `<ISO time> <text>` line per notable thing: start and stop, a lock taken over, lost
+runs and what was done with them, admissions and refusals, deliveries, wakes, quiet hours beginning and ending (meta
+`bot:quiet`), schedules fired, jobs started or ended, housekeeping, errors. Lines are redacted, stripped of control
+characters and capped at 2000 characters. A tick that did nothing writes nothing. A repeated identical error or refusal
+is written once per 10 minutes; `bot:last_error` keeps the newest. Only the start line goes to stdout, so the launchd
+log does not grow without bound.
+
+## M-053 The service files
+
+PATH is the folders of the recorded Node, git, tmux, claude and codex as found on the installing process's PATH, in
+that order, then launchd's default /usr/bin:/bin:/usr/sbin:/sbin. A tool not found becomes a warning. HOME is
+`env.ownerHome()`; the program is install.json's nodePath and cliEntry (falling back to this process's Node and this
+checkout's bin.js). The `$JV_HOME/logs` folder is created before launchd needs it. An identical file is left alone. A
+different file is moved to `$JV_HOME/archive/service/<name>-<UTC stamp><ext>` first. macOS prints `launchctl bootstrap
+gui/$(id -u) <plist>` and `launchctl bootout gui/$(id -u)/dev.jevellan.bot`, the form the README uses. Linux prints
+`systemctl --user daemon-reload` before `systemctl --user enable --now jevellan-bot`, and `disable --now` to undo it;
+systemd words are quoted with `%` and `$` doubled. Other platforms refuse with exit 2. Nothing in this repository
+loads or unloads a launchd job or a systemd unit: the owner runs the printed commands.
+
+## M-054 jevellan-bot registers jevellan-memory
+
+`runBot` and `tickOnce` call `ensureMemory()`, which registers jevellan-memory as core's memory port and as the store's
+schema extension, as the jv command's setup does; both registrations are idempotent. The improver's and the planner's
+work tasks read the project's memories, and a store first created by a host other than the jv command would otherwise
+lack the memory tables ("no such table: memories"). This import is why jevellan-bot lists jevellan-memory, as section 2
+allows.
+
+## M-055 A schedule's run-now keeps a task whose start Jev refused
+
+`jv schedule run` and `jv_schedule_run` create a task schedule's task as `jv task create` does, starting step 1 at once
+when a slot is free. When Jev refuses that start (JvError with `details.taskId`), the task exists and stays queued with
+Jev's reason, which the bot's admission retries. The run then records "created T.. (run now)", and `jv schedule run`
+prints the refusal as a warning, rather than recording an error for a task that was made. The tolerant creator is the
+scheduler's own `runNowCreator`, the default of `runNow`, so the command, the MCP tool and the UI route give the same
+result. Any other error is still the run's result ("error: ...").
+
+## M-056 jv bot status
+
+The JSON is `{bot, config, service}`: `bot` is `readBotState(store)`; `config` is bot.json validated with defaults
+filled, or the defaults when the file is missing or invalid (the text names the problem; with `--json` the problem goes
+to stderr); `service` is `{file: botServiceFile(platform, ownerHome()) ?? null, installed}`. The text adds the health
+URL and the last error. When the bot is down it reads "bot not running; last heartbeat 2 h ago" (or "no heartbeat
+yet").
+
+## M-057 The bot's configuration and status view live in core
+
+bot.json's schema and defaults, `serviceState` and `botStatusView` are in `jevellan-core/bot-config`, and jevellan-bot
+re-exports them under its old names. `jv bot status --json`, the MCP's `jv_bot_status` and the UI's bot route all
+build the one view of M-056 from there: the MCP and the UI may not import jevellan-bot (section 2), and a copy of the
+view in jevellan-mcp would have drifted from the bot's strict validation (a lenient copy showed an invalid bot.json as
+if it were valid). The probes of `jv providers check` moved to `jevellan-core/providers-check` for the same reason
+(housekeeping, M-048, runs them); the command re-exports them, so its output and tests are unchanged.
+
+## M-058 M13 runs on the sandbox clone
+
+M13's implement task may land when its step finishes, so the journey uses `jv-mono-sandbox-clone`, following M5's rule
+that a journey never dirties the main sandbox. It kills the process group of the run's detached `jv run` (SIGKILL to
+the group), then runs exactly one `jv bot tick` with no bot running, so the recovery is that one tick. It then starts
+the bot until the step finishes. The runtime Jev placed the step on is noted: a claude-tmux model lives in its tmux
+window, outside that process group.
+
+## M-059 Servers arm their stop signals before their ready line
+
+`jv mcp --http`, `jv ui` and `jv bot start` install their SIGTERM and SIGINT handlers before they print the line that
+says they are listening. A supervisor (or a test) that signals as soon as it reads that line stops the server cleanly,
+closing it and removing its pid file, instead of killing the process by the default action and leaving a stale pid
+file behind.

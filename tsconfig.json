@@ -17,6 +17,9 @@
       "path": "packages/improver"
     },
     {
+      "path": "packages/bot"
+    },
+    {
       "path": "packages/mcp"
     },
     {

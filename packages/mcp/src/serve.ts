@@ -162,6 +162,9 @@ export async function runMcpCommand(
     }
     const running = await startHttp({ port, bind, token });
     try {
+      // Armed before the URL line, which is the ready line: a signal sent as soon as it is read must still stop the
+      // server cleanly (closing it and removing the pid file), not kill the process.
+      const stopped = waitForSignal(hooks.signals ?? process);
       if (options.json) {
         output.out(JSON.stringify({ url: running.url, port: running.port, bind: running.bind, pid: process.pid, tokenFile: tokenFile(), tokenWritten: written }, null, 2));
       } else {
@@ -169,7 +172,7 @@ export async function runMcpCommand(
       }
       output.err(`Health: GET ${running.url.replace(/\/mcp$/, '/health')}. Calls are logged to ${shownPath(join(paths.logsDir, 'mcp.log'))}.`);
       hooks.onListening?.(running);
-      await waitForSignal(hooks.signals ?? process);
+      await stopped;
     } finally {
       await running.close();
     }

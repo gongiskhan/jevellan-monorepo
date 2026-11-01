@@ -13,13 +13,9 @@
 // - jv bot status (the bot's command, brief section 8): {bot: readBotState, config: bot.json read leniently over the
 //   defaults of section 8, service: {file, installed}}; the bot's command builds the same object.
 
-import { existsSync, readFileSync } from 'node:fs';
-import { runChecks, botServiceFile, type CheckResult, type DoctorDeps } from 'jevellan-core/doctor';
-import { readBotState, type BotState } from 'jevellan-core/bot-state';
-import { ownerHome } from 'jevellan-core/env';
+import { runChecks, type CheckResult, type DoctorDeps } from 'jevellan-core/doctor';
 import { JvError, notFound, refused } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
-import { botConfigFile } from 'jevellan-core/limits';
 import { paths } from 'jevellan-core/paths';
 import type { Store } from 'jevellan-core/store';
 import * as memory from 'jevellan-memory';
@@ -143,56 +139,5 @@ export function memoryLine(m: Memory): string {
 
 // ---- jv bot status ---------------------------------------------------------------------------------------------
 
-/** bot.json's defaults (brief section 8). */
-export const BOT_CONFIG_DEFAULTS = Object.freeze({
-  tickSeconds: 15,
-  limits: Object.freeze({ perProject: 2, total: 4 }),
-  quietHours: null,
-  health: Object.freeze({ bind: '127.0.0.1', port: 7073 }),
-  logLines: 20000,
-});
-
-export type BotConfig = Record<string, unknown> & {
-  tickSeconds: unknown;
-  limits: Record<string, unknown>;
-  quietHours: unknown;
-  health: Record<string, unknown>;
-  logLines: unknown;
-};
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
-
-/** bot.json over the defaults, read leniently (the bot validates it strictly at its start): the defaults when absent. */
-export function readBotConfig(file: string = botConfigFile()): BotConfig {
-  let raw: unknown;
-  try {
-    raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined;
-  } catch {
-    raw = undefined;
-  }
-  const f = isObject(raw) ? raw : {};
-  return {
-    ...BOT_CONFIG_DEFAULTS,
-    ...f,
-    limits: { ...BOT_CONFIG_DEFAULTS.limits, ...(isObject(f.limits) ? f.limits : {}) },
-    health: { ...BOT_CONFIG_DEFAULTS.health, ...(isObject(f.health) ? f.health : {}) },
-  };
-}
-
-export interface BotStatusView {
-  bot: BotState;
-  config: BotConfig;
-  service: { file: string | null; installed: boolean };
-}
-
-/** `jv bot status --json`: the heartbeat as the store has it (it works when the bot is not running). */
-export function botStatusView(store: Store, now: number = Date.now(), options: { platform?: NodeJS.Platform; home?: string } = {}): BotStatusView {
-  const file = botServiceFile(options.platform ?? process.platform, options.home ?? ownerHome()) ?? null;
-  return {
-    bot: readBotState(store, now),
-    config: readBotConfig(),
-    service: { file, installed: file !== null && existsSync(file) },
-  };
-}
+// The view of jv bot status --json is jevellan-core's (M-057), shared with jevellan-bot and the UI.
+export { botStatusView, readBotConfigOrDefaults, type BotStatusView } from 'jevellan-core/bot-config';

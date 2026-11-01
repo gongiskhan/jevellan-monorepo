@@ -187,3 +187,11 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   registration command needs nothing of this for an ordinary interactive session.
 - The session ran with HOME a folder of the run and the temporary home's claude-main token; `~/.claude.json` of the
   owner had the same sha1 before and after.
+- 2026-11-01 M14 temporary mode: `jv bot install-service` wrote the plist under a temporary owner home; `plutil -lint`
+  OK; the program is the 22.22.0 node and the checkout's bin.js with `bot start`; a second run left it unchanged; a
+  different file was archived first; `launchctl list` shows no `dev.jevellan.bot`. 7/7.
+- 2026-11-01 After the bot merge, the MCP transport test "a stale pid file is taken over" failed every run: the child
+  died by SIGINT (exit code null) instead of exiting 0. `jv mcp --http` printed its URL line before it installed its
+  signal handlers, and the redacted warning line printed in between had become slow enough (more secret sources) for
+  the test's SIGINT to arrive first. A 300 ms delay made it pass, which confirmed the race. Fixed at the source: the
+  server and `jv ui` now arm SIGTERM and SIGINT before the ready line (M-059); `jv bot start` already did.

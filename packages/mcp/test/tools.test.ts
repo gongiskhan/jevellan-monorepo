@@ -334,7 +334,7 @@ test('jobs: list is jobView; run returns the job of the day, refuses a busy kind
 
 test('jv_bot_status: the heartbeat, bot.json over the defaults and the service file', async () => {
   const v = await data('jv_bot_status');
-  assert.deepEqual(v, JSON.parse(JSON.stringify(botStatusView(store, FIXED_NOW.getTime(), { home, platform: 'darwin' }))));
+  assert.deepEqual(v, JSON.parse(JSON.stringify(botStatusView(store, { now: FIXED_NOW.getTime(), ownerHome: home, platform: 'darwin' }))));
   assert.equal((v.bot as { alive: boolean }).alive, false);
   assert.deepEqual(v.config, { tickSeconds: 15, limits: { perProject: 100, total: 100 }, quietHours: null, health: { bind: '127.0.0.1', port: 7073 }, logLines: 20000 });
   assert.deepEqual(v.service, { file: join(home, 'Library', 'LaunchAgents', 'dev.jevellan.bot.plist'), installed: false });

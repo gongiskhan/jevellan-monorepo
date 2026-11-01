@@ -1,0 +1,37 @@
+{
+  "name": "jevellan-bot",
+  "version": "0.1.0",
+  "description": "The Jevellan bot: the always-on loop that keeps the queue moving, recovers lost runs, fires schedules and jobs, and leaves a heartbeat.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git",
+    "directory": "packages/bot"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "jevellan-core": "0.1.0",
+    "jevellan-improver": "0.1.0",
+    "jevellan-memory": "0.1.0",
+    "jevellan-planner": "0.1.0",
+    "jevellan-scheduler": "0.1.0",
+    "zod": "4.6.7"
+  }
+}

@@ -57,7 +57,7 @@ import { formatUsageWeek, usageReport } from 'jevellan-core/usage';
 import { improveProject, improverHandlers } from 'jevellan-improver';
 import { MEMORY_KINDS } from 'jevellan-memory';
 import { addGoal, doneGoal, formatGoalList, formatGoalView, goalView, listGoals, plannerHandlers, requireGoal } from 'jevellan-planner';
-import { addSchedule, pause, requireSchedule, resume, runNow, scheduleView } from 'jevellan-scheduler';
+import { addSchedule, pause, requireSchedule, resume, runNow, runNowCreator, scheduleView } from 'jevellan-scheduler';
 import { op, type OpContext, type Operation, type OpResult, type ResourceDef } from './ops.js';
 import { botStatusView, doctorView, memoryAdd, memoryArchive, memoryLine, memorySearch } from './views.js';
 
@@ -487,7 +487,8 @@ const scheduleRun = op({
   mutates: true,
   run: ({ schedule }, ctx) =>
     withStore(async (store) => {
-      const r = await runNow(store, requireSchedule(store, schedule), now(ctx), ctx.deps?.task ? { createTask: (s, i) => createTask(s, i, ctx.deps?.task) } : {});
+      const create = ctx.deps?.task ? (s: Store, i: Parameters<typeof createTask>[1]) => createTask(s, i, ctx.deps?.task) : undefined;
+      const r = await runNow(store, requireSchedule(store, schedule), now(ctx), { createTask: runNowCreator(undefined, create) });
       return result({ ...r, schedule: scheduleView1(store, r.schedule, ctx) }, `${r.schedule.id}: ${r.result}`);
     }),
 });
@@ -618,8 +619,9 @@ const botStatus = op({
   mutates: false,
   run: (_input, ctx) =>
     withStore((store) => {
-      const v = botStatusView(store, now(ctx).getTime(), {
-        ...(ctx.deps?.ownerHome !== undefined ? { home: ctx.deps.ownerHome } : {}),
+      const v = botStatusView(store, {
+        now: now(ctx).getTime(),
+        ...(ctx.deps?.ownerHome !== undefined ? { ownerHome: ctx.deps.ownerHome } : {}),
         ...(ctx.deps?.platform !== undefined ? { platform: ctx.deps.platform } : {}),
       });
       const service = v.service.file === null ? 'service: none for this platform' : `service: ${v.service.installed ? 'installed' : 'not installed'} (${v.service.file})`;

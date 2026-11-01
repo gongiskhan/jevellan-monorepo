@@ -5,7 +5,7 @@
 // the bot was down fires once at the next tick, not once per missed slot, and says "fired late (missed HH:MM)".
 // `run` fires now without moving next_run_at; pause and resume flip enabled (resume recomputes the next run from now).
 
-import { refused, notFound } from 'jevellan-core/errors';
+import { JvError, refused, notFound } from 'jevellan-core/errors';
 import type { Store } from 'jevellan-core/store';
 import { createTask, type CreateTaskInput } from 'jevellan-core/tasks';
 import { JOB_KINDS, TASK_KINDS, type JobKind, type ProjectRow, type ScheduleRow, type TaskKind } from 'jevellan-core/types';
@@ -196,8 +196,30 @@ export async function fire(store: Store, schedule: ScheduleRow, now: Date = new 
 }
 
 /** Fires a schedule now without moving next_run_at (`jv schedule run`). */
+/**
+ * The creator of `run`: core's createTask, which starts step 1 at once when a slot is free; when Jev refuses that
+ * start the task exists and stays queued with Jev's reason (the refusal names it in details.taskId), so the run
+ * counts it as created (M-055). `onRefused` hears the refusal (jv schedule run prints it as a warning); `create` is
+ * the creator it wraps (a test's fake placement).
+ */
+export function runNowCreator(
+  onRefused?: (message: string) => void,
+  create: FireDeps['createTask'] = createTask as FireDeps['createTask'],
+): FireDeps['createTask'] {
+  return async (store, input) => {
+    try {
+      return await create(store, input);
+    } catch (error) {
+      const taskId = error instanceof JvError ? error.details?.taskId : undefined;
+      if (typeof taskId !== 'string') throw error;
+      onRefused?.(error instanceof Error ? error.message : String(error));
+      return { task: { id: taskId } };
+    }
+  };
+}
+
 export async function runNow(store: Store, schedule: ScheduleRow, now: Date = new Date(), deps: Partial<FireDeps> = {}): Promise<FireResult> {
-  const d: FireDeps = { createTask: deps.createTask ?? (createTask as FireDeps['createTask']) };
+  const d: FireDeps = { createTask: deps.createTask ?? runNowCreator() };
   let result: string;
   let made: { task?: string; job?: string } = {};
   try {

@@ -22,6 +22,12 @@
       "path": "../improver"
     },
     {
+      "path": "../scheduler"
+    },
+    {
+      "path": "../bot"
+    },
+    {
       "path": "../ui"
     },
     {
