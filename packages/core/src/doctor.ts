@@ -785,9 +785,11 @@ const checkSkills: Check = async (ctx) => {
   if (!existsSync(routerFile)) {
     return [fail('skills', `no ${ROUTER_SKILL} skill at ${routerFile}: this jv does not run without the skills`, bootstrapSkillsFix(install))];
   }
-  // The lifted line: every installed skill's jv-version against this runtime's version.
+  // The lifted line, every installed skill's jv-version against one version. The monorepo versions jv and the skills
+  // apart (M-022), so the reference is the installed router's jv-version: a skill set copied from one checkout agrees
+  // with itself, and skills:version compares the router with what jv bootstrap recorded.
   const names = jvSkillNames(paths.skillsDir);
-  const version = packageVersion();
+  const version = frontmatterValue(readFileSync(routerFile, 'utf8'), 'jv-version') ?? packageVersion();
   const off = names
     .map((n) => {
       const v = frontmatterValue(readFileSync(join(paths.skillsDir, n, 'SKILL.md'), 'utf8'), 'jv-version');
@@ -797,7 +799,7 @@ const checkSkills: Check = async (ctx) => {
   const out: CheckResult[] = [
     off.length === 0
       ? ok('skills', `${names.length} skills in ${paths.skillsDir} at version ${version}`)
-      : warn('skills', `runtime ${version}, skills differ: ${off.join(', ')}`, 'run jv update'),
+      : warn('skills', `the router is at ${version}, these skills differ: ${off.join(', ')}`, 'run jv update'),
   ];
   if (ctx.wants('skills:checkout')) out.push(skillsCheckoutLine(install));
   if (ctx.wants('skills:version')) out.push(skillsVersionLine(install, routerFile));

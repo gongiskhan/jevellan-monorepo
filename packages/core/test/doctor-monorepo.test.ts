@@ -185,12 +185,12 @@ describe('skills: the installed skills, the checkout and the recorded version', 
     assert.equal(n.get('skills:version')!.fix, 'jv update');
   });
 
-  test('the lifted per-skill jv-version line stays as it was', async () => {
+  test('the per-skill jv-version line compares every skill with the installed router (M-022)', async () => {
     install();
     writeSkill(join(home, 'skills'), 'jevellan-duty-plan', 'Body of jevellan-duty-plan.', '0.0.9');
     const m = byName(await D.runChecks(['skills'], deps()));
     assert.equal(m.get('skills')!.status, 'WARN');
-    assert.equal(m.get('skills')!.detail, `runtime ${version}, skills differ: jevellan-duty-plan 0.0.9`);
+    assert.equal(m.get('skills')!.detail, `the router is at ${version}, these skills differ: jevellan-duty-plan 0.0.9`);
     assert.equal(m.get('skills')!.fix, 'run jv update');
     // The installed copy now differs from the checkout too.
     assert.equal(m.get('skills:checkout')!.status, 'WARN');

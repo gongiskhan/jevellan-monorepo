@@ -41,10 +41,9 @@
 // rounds), so two tasks finishing together both land.
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
-import { BASE_KEYS, machineGitIdentity, ownerHome } from './env.js';
+import { BASE_KEYS, machineGitIdentity, ownerHome, playwrightBrowsersPath } from './env.js';
 import { JvError, notFound, refused } from './errors.js';
 import { isAlive } from './launcher.js';
 import {
@@ -386,8 +385,9 @@ export function checkEnvironment(base: NodeJS.ProcessEnv = process.env): Record<
   const id = machineGitIdentity(base);
   if (id.name) env.GIT_AUTHOR_NAME = env.GIT_COMMITTER_NAME = id.name;
   if (id.email) env.GIT_AUTHOR_EMAIL = env.GIT_COMMITTER_EMAIL = id.email;
-  const browsers = join(home, '.cache', 'ms-playwright');
-  if (existsSync(browsers)) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+  // The owner's Playwright browsers, wherever this platform keeps them (D-045, M-021).
+  const browsers = playwrightBrowsersPath(home);
+  if (browsers !== undefined) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
   env.GIT_TERMINAL_PROMPT = '0';
   return env;
 }
