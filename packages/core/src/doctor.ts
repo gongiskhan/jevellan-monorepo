@@ -3,17 +3,37 @@
 //
 // Every effect on the outside world (child processes, HTTP, the clock, the disk) goes through DoctorDeps, so tests
 // run with fakes. Probe output is never shown raw: at most its first line, through the redactor. Secrets travel
-// only in child environments (D-007), never in argv.
+// only in child environments (D-007), never in argv. `--check NAME` takes a group or one line of it (D-013), and
+// jv doctor exits 2 when any line is FAIL, 0 otherwise.
+//
+// The monorepo's checks (brief sections 1, 4, 6, 8 and 11), on top of the lifted ones:
+// - skills: this jv does not run without $JV_HOME/skills/jevellan-router/SKILL.md (FAIL); the installed skills are
+//   compared by tree hash with the jevellan-skills checkout install.json records (M-007), and the router's
+//   jv-version with the one jv bootstrap recorded (WARN, jv update). The lifted per-skill jv-version line stays.
+// - ports: 7071 (jv ui), 7072 (jv mcp --http) and the bot's health port (bot.json, default 7073) are free, or held
+//   by the jv process whose pid is in $JV_HOME/run/<ui|mcp>.pid or run/bot.lock; anything else holding one is FAIL
+//   with the --port fix. Listeners come from `lsof -nP -iTCP:<port> -sTCP:LISTEN -Fpc -w` (pid and command, no
+//   warnings); lsof is looked for on PATH, then in /usr/sbin (macOS) and /usr/bin; without it the line is WARN.
+// - memory: node:sqlite of this Node can create an FTS5 table (jevellan-memory needs it), else FAIL naming a Node
+//   on this machine that can.
+// - service: the bot's service file (launchd plist on macOS, systemd user unit on Linux) under the owner's home
+//   (env.ownerHome, never a provider HOME); WARN when it is not installed.
+// - member: an informational line when launchd runs Jevellan's member daemon (dev.jevellan.daemon); jv only reads
+//   `launchctl list` and never acts on it.
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, resolve, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { readInstall, skillJvVersion, skillsSourceDir, skillsTreeHash, type InstallRecord } from './bootstrap.js';
 import { listClaudeModels, type OfferedModel } from './claude-control.js';
 import { isAuthError, probeCodex, type CodexProbe } from './codex-control.js';
 import { packageVersion } from './version.js';
 import { jevClient } from './jev/client.js';
 import { JevError } from './jev/contract.js';
+import { ownerHome } from './env.js';
+import { botConfigFile } from './limits.js';
 import { paths } from './paths.js';
 import { gitTopLevel } from './project.js';
 import {
@@ -76,6 +96,21 @@ export interface DoctorDeps {
   claudeModels: (env: Record<string, string>, cwd: string) => Promise<OfferedModel[]>;
   /** Stores a login probe's result for placement (meta provider_auth:<name>, D-012). */
   recordAuth: (provider: string, record: ProviderAuthRecord) => void;
+  /** The platform the service and member lines are about (default process.platform). */
+  platform: NodeJS.Platform;
+  /** The owner's own home (env.ownerHome): where the bot's service file lives. Never a provider's HOME. */
+  ownerHome: string;
+  /** The Node binary running this doctor (default process.execPath). */
+  execPath: string;
+  /** Tries an FTS5 table in this Node's node:sqlite: undefined when it works, else why not (brief section 6). */
+  fts5Probe: () => string | undefined;
+  /** Another Node binary on this machine whose node:sqlite has FTS5; asked only when this one has none. */
+  findFts5Node: () => Promise<NodeBinary | undefined>;
+}
+
+export interface NodeBinary {
+  path: string;
+  version: string;
 }
 
 export const MIN_NODE: readonly [number, number] = [22, 13];
@@ -84,6 +119,13 @@ export const APM_INSTALL_COMMAND = 'apm install gongiskhan/jevellan-skills --tar
 const BASE_ENV_KEYS = ['PATH', 'USER', 'LANG', 'TERM', 'SHELL', 'TMPDIR'] as const;
 const SKILL_PREFIX = 'jevellan-';
 const ROUTER_SKILL = 'jevellan-router';
+
+/** The loopback ports of brief section 1: jv ui, jv mcp --http and the bot's health endpoint (bot.json can move it). */
+export const JV_PORTS = { ui: 7071, mcp: 7072, bot: 7073 } as const;
+/** The launchd label of the bot's service (section 8), distinct from Jevellan's member daemon. */
+export const BOT_SERVICE_LABEL = 'dev.jevellan.bot';
+/** The launchd label of the Jevellan member daemon, which jv only ever reads about (section 1). */
+export const MEMBER_DAEMON_LABEL = 'dev.jevellan.daemon';
 
 // ---- default effects ---------------------------------------------------------------------------------------
 
@@ -168,7 +210,87 @@ function freeBytesAt(path: string): number {
   return Number(st.bavail) * Number(st.bsize);
 }
 
+/** Whether this Node's node:sqlite can create an FTS5 table: undefined when it can, else the error's message. */
+export function probeFts5(): string | undefined {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(':memory:');
+    db.exec('CREATE VIRTUAL TABLE fts5_probe USING fts5(x)');
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    db?.close();
+  }
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.replace(/^v/, '').split('.').map(Number);
+  const pb = b.replace(/^v/, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * The Node binaries of this machine worth trying when this one has no FTS5: the owner's nvm versions (newest first),
+ * `node` in every PATH folder, and the usual system places. Existing files only, each real path once.
+ */
+export function nodeCandidates(home: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const out: string[] = [];
+  const nvm = join(home, '.nvm', 'versions', 'node');
+  try {
+    for (const v of readdirSync(nvm).filter((n) => /^v\d+\.\d+\.\d+$/.test(n)).sort((a, b) => compareVersions(b, a))) out.push(join(nvm, v, 'bin', 'node'));
+  } catch {
+    // no nvm
+  }
+  for (const dir of (env.PATH ?? '').split(delimiter)) if (dir !== '') out.push(join(dir, 'node'));
+  out.push('/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node');
+  const seen = new Set<string>();
+  const found: string[] = [];
+  for (const candidate of out) {
+    let real: string;
+    try {
+      real = realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    found.push(candidate);
+  }
+  return found;
+}
+
+/** Run by each candidate Node: exit 0 printing its version when it is 22.13 or later and node:sqlite has FTS5. */
+const FTS5_NODE_SCRIPT = [
+  "const [a, b] = process.versions.node.split('.').map(Number);",
+  'if (a < 22 || (a === 22 && b < 13)) process.exit(3);',
+  "const { DatabaseSync } = require('node:sqlite');",
+  "const db = new DatabaseSync(':memory:');",
+  "db.exec('CREATE VIRTUAL TABLE fts5_probe USING fts5(x)');",
+  'db.close();',
+  'process.stdout.write(process.versions.node);',
+].join(' ');
+
+/** The newest of `candidates` whose node:sqlite has FTS5 (each asked with a one-line script), or undefined. */
+export async function findFts5Node(candidates: readonly string[], exec: DoctorDeps['exec'] = execCommand): Promise<NodeBinary | undefined> {
+  const results = await Promise.all(
+    candidates.slice(0, 16).map(async (path): Promise<NodeBinary | undefined> => {
+      const r = await exec(path, ['-e', FTS5_NODE_SCRIPT], { timeoutMs: 15_000 });
+      const version = r.stdout.trim();
+      return r.code === 0 && /^\d+\.\d+\.\d+/.test(version) ? { path, version } : undefined;
+    }),
+  );
+  return results
+    .filter((n): n is NodeBinary => n !== undefined)
+    .sort((a, b) => compareVersions(b.version, a.version))[0];
+}
+
 export function defaultDeps(): DoctorDeps {
+  const owner = ownerHome();
   return {
     exec: execCommand,
     fetch: globalThis.fetch,
@@ -186,6 +308,14 @@ export function defaultDeps(): DoctorDeps {
       } finally {
         store.close();
       }
+    },
+    platform: process.platform,
+    ownerHome: owner,
+    execPath: process.execPath,
+    fts5Probe: probeFts5,
+    findFts5Node: () => {
+      const self = realOr(process.execPath);
+      return findFts5Node(nodeCandidates(owner).filter((n) => realOr(n) !== self));
     },
   };
 }
@@ -574,9 +704,57 @@ const checkHook: Check = async (ctx) => {
   ];
 };
 
-const checkSkills: Check = async () => {
+/** What `jv bootstrap --skills` should be given: the recorded checkout while it is still one, else a placeholder. */
+function bootstrapSkillsFix(install: Partial<InstallRecord> | undefined): string {
+  const recorded = install?.skillsSource;
+  const usable = typeof recorded === 'string' && recorded !== '' && existsSync(join(recorded, '.apm', 'skills', ROUTER_SKILL, 'SKILL.md'));
+  return `jv bootstrap --skills ${usable ? recorded : '<path to a jevellan-skills checkout>'}`;
+}
+
+/** The installed skills against the jevellan-skills checkout install.json records (M-007), by tree hash. */
+function skillsCheckoutLine(install: Partial<InstallRecord> | undefined): CheckResult {
+  const name = 'skills:checkout';
+  const recorded = install?.skillsSource;
+  if (typeof recorded !== 'string' || recorded === '') {
+    return warn(name, `no skills checkout recorded in ${paths.installFile}; the installed skills cannot be compared with one`, bootstrapSkillsFix(install));
+  }
+  let sourceDir: string;
+  try {
+    sourceDir = skillsSourceDir(recorded);
+  } catch {
+    const why = existsSync(recorded) ? 'is not a jevellan-skills checkout any more' : 'is missing';
+    return warn(name, `the recorded skills checkout ${recorded} ${why}`, bootstrapSkillsFix(undefined));
+  }
+  if (skillsTreeHash(sourceDir) === skillsTreeHash(paths.skillsDir)) {
+    return ok(name, `the skills in ${paths.skillsDir} match the checkout ${recorded}`);
+  }
+  return warn(name, `the skills in ${paths.skillsDir} differ from the checkout ${recorded}`, 'jv update');
+}
+
+/** The router's jv-version against the one jv bootstrap recorded in install.json (brief section 11). */
+function skillsVersionLine(install: Partial<InstallRecord> | undefined, routerFile: string): CheckResult {
+  const name = 'skills:version';
+  const installed = skillJvVersion(routerFile);
+  const recorded = install?.skillsVersion;
+  if (typeof recorded !== 'string' || recorded === '') {
+    return warn(
+      name,
+      `jv bootstrap recorded no skills version in ${paths.installFile} (the router's jv-version is ${installed ?? 'missing'})`,
+      install ? 'jv update' : bootstrapSkillsFix(install),
+    );
+  }
+  if (installed === recorded) return ok(name, `the router's jv-version ${installed} is the one jv bootstrap recorded`);
+  return warn(name, `the router's jv-version is ${installed ?? 'missing'}, jv bootstrap recorded ${recorded}`, 'jv update');
+}
+
+const checkSkills: Check = async (ctx) => {
+  const install = readInstall();
+  const routerFile = paths.skillFile(ROUTER_SKILL);
+  if (!existsSync(routerFile)) {
+    return [fail('skills', `no ${ROUTER_SKILL} skill at ${routerFile}: this jv does not run without the skills`, bootstrapSkillsFix(install))];
+  }
+  // The lifted line: every installed skill's jv-version against this runtime's version.
   const names = jvSkillNames(paths.skillsDir);
-  if (names.length === 0) return [fail('skills', `no jevellan skills in ${paths.skillsDir}`, 'run jv update')];
   const version = packageVersion();
   const off = names
     .map((n) => {
@@ -584,11 +762,14 @@ const checkSkills: Check = async () => {
       return v === version ? undefined : `${n} ${v ?? 'no jv-version'}`;
     })
     .filter((x): x is string => x !== undefined);
-  return [
+  const out: CheckResult[] = [
     off.length === 0
       ? ok('skills', `${names.length} skills in ${paths.skillsDir} at version ${version}`)
       : warn('skills', `runtime ${version}, skills differ: ${off.join(', ')}`, 'run jv update'),
   ];
+  if (ctx.wants('skills:checkout')) out.push(skillsCheckoutLine(install));
+  if (ctx.wants('skills:version')) out.push(skillsVersionLine(install, routerFile));
+  return out;
 };
 
 function compareCopies(label: string, dir: string, reference: string[], expectInstalled: boolean, fix: string): CheckResult {
@@ -655,6 +836,178 @@ const checkModelDescriptions: Check = async (ctx) => {
   return [warn('model-descriptions', details.join('; '), fixes.join('; '))];
 };
 
+// ---- the monorepo's machine checks: memory, ports, service, member ------------------------------------------
+
+const checkMemory: Check = async (ctx) => {
+  const problem = ctx.deps.fts5Probe();
+  if (problem === undefined) return [ok('memory', `node:sqlite of Node ${ctx.deps.nodeVersion} has FTS5`)];
+  const other = await ctx.deps.findFts5Node();
+  const fix = other
+    ? `use ${other.path} (Node ${other.version}, FTS5 present): jv bootstrap --node ${other.path}`
+    : 'install a Node 22.13 or later built with FTS5 and run jv bootstrap --node <its path>';
+  return [fail('memory', `node:sqlite of this Node (${ctx.deps.execPath}, ${ctx.deps.nodeVersion}) cannot create an FTS5 table, which jv memory needs: ${firstLine(problem)}`, fix)];
+};
+
+/** $JV_HOME/run/<file>: the pid files of jv ui and jv mcp, and the bot's lock. */
+export function runFile(file: string): string {
+  return join(paths.home, 'run', file);
+}
+
+/** The pid a pid file or lock holds ("<pid>" on its first line, or JSON with a pid), or undefined. */
+export function readPidFile(file: string): number | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8').trim();
+  } catch {
+    return undefined;
+  }
+  let pid: unknown;
+  if (text.startsWith('{')) {
+    try {
+      pid = (JSON.parse(text) as { pid?: unknown }).pid;
+    } catch {
+      return undefined;
+    }
+  } else {
+    pid = Number(text.split(/\s+/)[0]);
+  }
+  return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/** The bot's health port: health.port of bot.json, read leniently (the bot validates the file), else 7073. */
+export function botHealthPort(file: string = botConfigFile()): number {
+  try {
+    const port = (JSON.parse(readFileSync(file, 'utf8')) as { health?: { port?: unknown } })?.health?.port;
+    if (typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535) return port;
+  } catch {
+    // no bot.json yet, or not JSON: the bot refuses it at its start
+  }
+  return JV_PORTS.bot;
+}
+
+export interface Listener {
+  pid: number;
+  command: string;
+}
+
+/** The listening processes in `lsof -F pc` output: a `p<pid>` line starts one, a `c<command>` line names it. */
+export function parseLsofListeners(stdout: string): Listener[] {
+  const out: Listener[] = [];
+  let current: Listener | undefined;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('p')) {
+      const pid = Number(line.slice(1));
+      current = Number.isInteger(pid) && pid > 0 ? out.find((l) => l.pid === pid) : undefined;
+      if (current === undefined && Number.isInteger(pid) && pid > 0) {
+        current = { pid, command: '' };
+        out.push(current);
+      }
+    } else if (line.startsWith('c') && current !== undefined && current.command === '') {
+      current.command = line.slice(1);
+    }
+  }
+  return out;
+}
+
+/**
+ * Runs the first of `commands` that exists: the bare name (PATH), then the system places. lsof lives in /usr/sbin on
+ * macOS, which the PATH of a service or a minimal shell often leaves out.
+ */
+async function execFirst(ctx: Ctx, commands: readonly string[], args: readonly string[], options: ExecOptions): Promise<ExecResult> {
+  let last: ExecResult = { code: null, stdout: '', stderr: '', error: 'not-found' };
+  for (const command of commands) {
+    last = await ctx.deps.exec(command, args, options);
+    if (last.error !== 'not-found') return last;
+  }
+  return last;
+}
+
+export const LSOF_COMMANDS: readonly string[] = ['lsof', '/usr/sbin/lsof', '/usr/bin/lsof'];
+export const LAUNCHCTL_COMMANDS: readonly string[] = ['launchctl', '/bin/launchctl'];
+
+interface PortLine {
+  name: string;
+  port: number;
+  /** Who should hold the port: "jv ui", "jv mcp", "jv bot". */
+  owner: string;
+  pidFile: string;
+  fix: string;
+}
+
+function portLines(): PortLine[] {
+  const config = botConfigFile();
+  return [
+    { name: 'ports:ui', port: JV_PORTS.ui, owner: 'jv ui', pidFile: runFile('ui.pid'), fix: 'jv ui --port <another free port>' },
+    { name: 'ports:mcp', port: JV_PORTS.mcp, owner: 'jv mcp', pidFile: runFile('mcp.pid'), fix: 'jv mcp --http --port <another free port>' },
+    { name: 'ports:bot', port: botHealthPort(config), owner: 'jv bot', pidFile: runFile('bot.lock'), fix: `set health.port in ${config} to another free port` },
+  ];
+}
+
+async function portLine(ctx: Ctx, line: PortLine): Promise<CheckResult> {
+  const { name, port } = line;
+  const r = await execFirst(ctx, LSOF_COMMANDS, ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc', '-w'], { timeoutMs: 15_000 });
+  if (r.error === 'not-found') return warn(name, `port ${port} not checked: lsof is not on PATH, /usr/sbin or /usr/bin`, 'install lsof');
+  if (r.error !== undefined) return warn(name, `port ${port} not checked: lsof ${r.error === 'timeout' ? 'did not answer' : `failed: ${firstLine(r.error)}`}`);
+  const listeners = parseLsofListeners(r.stdout);
+  // lsof exits 1 both when nothing matches (a free port) and on an error; with -w (no warnings) only an error
+  // writes to stderr.
+  if (listeners.length === 0) {
+    return (r.code === 0 || r.code === 1) && r.stderr.trim() === ''
+      ? ok(name, `port ${port} is free`)
+      : warn(name, `port ${port} not checked: lsof failed: ${firstLine(r.stderr || r.stdout) || `exit ${r.code}`}`);
+  }
+  const pid = readPidFile(line.pidFile);
+  if (pid !== undefined && listeners.some((l) => l.pid === pid)) return ok(name, `port ${port}: ${line.owner} running (pid ${pid})`);
+  const holder = listeners[0]!;
+  return fail(name, `port ${port} is in use by ${holder.command || 'another process'} (pid ${holder.pid})`, line.fix);
+}
+
+const checkPorts: Check = async (ctx) => {
+  const wanted = portLines().filter((l) => ctx.wants(l.name));
+  return Promise.all(wanted.map((l) => portLine(ctx, l)));
+};
+
+/** Where `jv bot install-service` writes the bot's service file under the owner's home, or undefined (section 8). */
+export function botServiceFile(platform: NodeJS.Platform, home: string): string | undefined {
+  if (platform === 'darwin') return join(home, 'Library', 'LaunchAgents', `${BOT_SERVICE_LABEL}.plist`);
+  if (platform === 'linux') return join(home, '.config', 'systemd', 'user', 'jevellan-bot.service');
+  return undefined;
+}
+
+const checkService: Check = async (ctx) => {
+  const file = botServiceFile(ctx.deps.platform, ctx.deps.ownerHome);
+  if (file === undefined) return [ok('service', `the bot has service files for macOS and Linux only, not ${ctx.deps.platform}; skipped`)];
+  return [existsSync(file) ? ok('service', `installed (${file})`) : warn('service', `not installed (no ${file})`, 'jv bot install-service')];
+};
+
+/**
+ * A launchd job's pid in `launchctl list` output ("PID<tab>Status<tab>Label" lines): a number when it runs, null
+ * when it is loaded without a process ("-"), undefined when the label is not listed.
+ */
+export function launchdJobPid(stdout: string, label: string): number | null | undefined {
+  for (const line of stdout.split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 3 || cols[2] !== label) continue;
+    const pid = Number(cols[0]);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  }
+  return undefined;
+}
+
+/** Informational only: whether Jevellan's member daemon runs here. jv reads launchctl list and never acts on it. */
+const checkMember: Check = async (ctx) => {
+  const none = ok('member', 'no Jevellan member on this machine');
+  if (ctx.deps.platform !== 'darwin') return [none];
+  const r = await execFirst(ctx, LAUNCHCTL_COMMANDS, ['list'], { timeoutMs: 15_000 });
+  if (r.error !== undefined || r.code !== 0) {
+    return [ok('member', `no Jevellan member detected (launchctl list ${r.error === 'not-found' ? 'is not available' : 'failed'})`)];
+  }
+  const pid = launchdJobPid(r.stdout, MEMBER_DAEMON_LABEL);
+  if (pid === undefined) return [none];
+  if (pid === null) return [ok('member', `Jevellan member loaded but not running (${MEMBER_DAEMON_LABEL}); jv leaves it alone`)];
+  return [ok('member', `Jevellan member running (pid ${pid}); jv leaves it alone`)];
+};
+
 /** Every check group, in the order jv doctor prints them. */
 export const CHECKS: ReadonlyArray<readonly [string, Check]> = [
   ['node', checkNode],
@@ -668,16 +1021,23 @@ export const CHECKS: ReadonlyArray<readonly [string, Check]> = [
   ['logins', checkLogins],
   ['jev', checkJev],
   ['store', checkStore],
+  ['memory', checkMemory],
   ['disk', checkDisk],
   ['hook', checkHook],
   ['skills', checkSkills],
   ['skill-copies', checkSkillCopies],
   ['model-descriptions', checkModelDescriptions],
+  ['ports', checkPorts],
+  ['service', checkService],
+  ['member', checkMember],
 ];
 
 export const CHECK_NAMES: readonly string[] = CHECKS.map(([n]) => n);
 
-/** Group of a result-level name: key:<p> -> keys, login:<p> -> logins, skill-copies:<x> -> skill-copies. */
+/**
+ * Group of a result-level name: key:<p> -> keys, login:<p> -> logins, skill-copies:<x> -> skill-copies,
+ * skills:checkout -> skills, ports:ui -> ports.
+ */
 function groupOf(name: string): string {
   const prefix = name.split(':')[0]!;
   if (prefix === 'key') return 'keys';
@@ -686,8 +1046,9 @@ function groupOf(name: string): string {
 }
 
 /**
- * Runs the named checks (all when `names` is empty or omitted). A name is a group ("jev", "logins", "keys") or one
- * result ("login:claude-main", "key:glm"). Results come back in the order of CHECKS.
+ * Runs the named checks (all when `names` is empty or omitted). A name is a group ("jev", "logins", "keys", "skills",
+ * "ports", "memory", "service", "member") or one result ("login:claude-main", "key:glm", "ports:ui"). Results come
+ * back in the order of CHECKS.
  */
 export async function runChecks(names: readonly string[] = [], overrides: Partial<DoctorDeps> = {}): Promise<CheckResult[]> {
   const deps: DoctorDeps = { ...defaultDeps(), ...overrides };

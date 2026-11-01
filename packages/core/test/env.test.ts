@@ -1,5 +1,6 @@
 // The worker environment (minimalEnvironment, D-004): only the listed variables, the provider's HOME and login, never
-// the whole process environment.
+// the whole process environment. PLAYWRIGHT_BROWSERS_PATH is whichever of the owner's Playwright caches exists, the
+// platform's own first (~/Library/Caches/ms-playwright on macOS, ~/.cache/ms-playwright elsewhere).
 
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { FAKE_KEY, FAKE_TOKEN, makeHome } from './fixtures/run-fixture.js';
 
 const home = makeHome('jv-env-test-');
 process.env.JV_HOME = home;
-const { minimalEnvironment, bootstrapNode } = await import('../src/env.js');
+const { minimalEnvironment, bootstrapNode, playwrightBrowsersPath, playwrightCacheFolders } = await import('../src/env.js');
 const { loadProviders, findProvider } = await import('../src/providers.js');
 const { JvError } = await import('../src/errors.js');
 
@@ -41,6 +42,7 @@ test('a Claude subscription: base keys, provider HOME, token from tokenFile, jv 
     nodeBinary: node,
     gitIdentity: { name: 'Owner Name', email: 'owner@example.test' },
     ownerHome,
+    platform: 'linux',
   });
   assert.deepEqual(Object.keys(env).sort(), [
     'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
@@ -116,4 +118,29 @@ test('the bootstrap node is the one install.json records, else this process', ()
   writeFileSync(join(home, 'install.json'), JSON.stringify({ nodePath: '/does/not/exist/node' }));
   assert.equal(bootstrapNode(join(home, 'install.json')), process.execPath);
   rmSync(join(home, 'install.json'));
+});
+
+test('the Playwright browsers: the platform cache folder first, the other one when only it exists, none otherwise', () => {
+  const owner = join(home, 'owner-browsers');
+  const mac = join(owner, 'Library', 'Caches', 'ms-playwright');
+  const xdg = join(owner, '.cache', 'ms-playwright');
+  assert.deepEqual(playwrightCacheFolders(owner, 'darwin'), [mac, xdg]);
+  assert.deepEqual(playwrightCacheFolders(owner, 'linux'), [xdg, mac]);
+  assert.equal(playwrightBrowsersPath(owner, 'darwin'), undefined);
+  mkdirSync(xdg, { recursive: true });
+  assert.equal(playwrightBrowsersPath(owner, 'darwin'), xdg);
+  assert.equal(playwrightBrowsersPath(owner, 'linux'), xdg);
+  mkdirSync(mac, { recursive: true });
+  assert.equal(playwrightBrowsersPath(owner, 'darwin'), mac);
+  assert.equal(playwrightBrowsersPath(owner, 'linux'), xdg);
+  rmSync(xdg, { recursive: true });
+  assert.equal(playwrightBrowsersPath(owner, 'linux'), mac);
+});
+
+test('macOS: a worker gets ~/Library/Caches/ms-playwright of the owner, not of its provider HOME', () => {
+  const owner = join(home, 'owner-mac');
+  mkdirSync(join(owner, 'Library', 'Caches', 'ms-playwright'), { recursive: true });
+  const env = minimalEnvironment({ provider: findProvider(config, 'claude-main')!, base, nodeBinary: node, gitIdentity: {}, ownerHome: owner, platform: 'darwin' });
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, join(owner, 'Library', 'Caches', 'ms-playwright'));
+  assert.equal(env.HOME, join(home, 'homes', 'claude-main'));
 });

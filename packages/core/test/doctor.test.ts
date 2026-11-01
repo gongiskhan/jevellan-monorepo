@@ -1,9 +1,11 @@
-// Doctor tests: every check against a temporary JV_HOME with fake provider homes, a fake exec (no claude or codex
-// is ever run) and a fake fetch (no network). Every key and token here is a fake value written by the test.
+// Doctor tests: every check against a temporary JV_HOME with fake provider homes, a fake exec (no claude, codex, lsof
+// or launchctl is ever run) and a fake fetch (no network). Every key and token here is a fake value written by the
+// test. The monorepo's checks (skills against the checkout, ports, memory, service, member) have their own cases in
+// doctor-monorepo.test.ts; here they only take part in the full run.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -46,6 +48,12 @@ await seed({
   sourceSkillsDir: pkgSkills,
   nodePath: process.execPath,
 });
+// The skills checkout jv bootstrap installed them from, as install.json records it (M-007).
+cpSync(join(home, 'skills'), pkgSkills, { recursive: true });
+writeFileSync(join(home, 'install.json'), JSON.stringify({ skillsSource: join(root, 'pkg'), skillsVersion: version }));
+// The owner's own home of the service line: no bot service file installed.
+const ownerHome = join(root, 'owner');
+mkdirSync(ownerHome);
 
 // A project to run the doctor in, registered in the store (the hook line checks registered projects only).
 const project = join(root, 'proj');
@@ -82,6 +90,11 @@ function fakeExec(overrides: Record<string, ExecResult> = {}) {
     }
     if (command === 'codex' && args[0] === '--version') return { code: 0, stdout: 'codex-cli 0.153.4\n', stderr: '' };
     if (command === 'codex' && args[0] === 'login') return { code: 1, stdout: '', stderr: 'Not logged in\n' };
+    // Nothing listens on jv's ports (lsof exits 1 with no output), and launchd runs the member daemon.
+    if (command === 'lsof') return { code: 1, stdout: '', stderr: '' };
+    if (command === 'launchctl' && args[0] === 'list') {
+      return { code: 0, stdout: 'PID\tStatus\tLabel\n79678\t0\tdev.jevellan.daemon\n821\t0\tdev.jevellan.playground.daemon\n', stderr: '' };
+    }
     return { code: null, stdout: '', stderr: '', error: 'not-found' };
   };
   return { exec, calls };
@@ -136,6 +149,11 @@ function deps(over: Partial<import('../src/doctor.js').DoctorDeps> = {}) {
     nodeVersion: '22.23.2',
     freeBytes: () => 400 * 1024 ** 3,
     probeTimeoutMs: 60_000,
+    platform: 'darwin' as NodeJS.Platform,
+    ownerHome,
+    execPath: '/opt/node22/bin/node',
+    fts5Probe: () => undefined,
+    findFts5Node: async () => undefined,
     ...over,
   };
 }
@@ -194,9 +212,23 @@ describe('jv doctor', () => {
     assert.equal(status('skill-copies:claude-main'), 'OK');
     assert.equal(m.get('model-descriptions')!.status, 'WARN');
     assert.match(m.get('model-descriptions')!.detail, /no "## model descriptions" section yet/);
+    // The monorepo's checks.
+    assert.equal(status('skills:checkout'), 'OK');
+    assert.equal(status('skills:version'), 'OK');
+    assert.equal(status('memory'), 'OK');
+    assert.equal(m.get('ports:ui')!.detail, 'port 7071 is free');
+    assert.equal(m.get('ports:mcp')!.detail, 'port 7072 is free');
+    assert.equal(m.get('ports:bot')!.detail, 'port 7073 is free');
+    assert.equal(m.get('service')!.status, 'WARN');
+    assert.equal(m.get('service')!.fix, 'jv bot install-service');
+    assert.equal(m.get('member')!.status, 'OK');
+    assert.equal(m.get('member')!.detail, 'Jevellan member running (pid 79678); jv leaves it alone');
+    // jv only reads launchd: one `launchctl list`, nothing else.
+    assert.deepEqual(fx.calls.filter((c) => c.command === 'launchctl').map((c) => c.args), [['list']]);
     // Order follows CHECKS.
     const groups = results.map((r) => r.name.split(':')[0]);
     assert.deepEqual([...new Set(groups)].slice(0, 7), ['node', 'git', 'tmux', 'claude', 'models', 'codex', 'providers']);
+    assert.deepEqual([...new Set(groups)].slice(-4), ['model-descriptions', 'ports', 'service', 'member']);
     assert.ok(!results.some((r) => r.status === 'FAIL'), JSON.stringify(results.filter((r) => r.status === 'FAIL')));
     // Jev got the key in the header, from the file.
     assert.deepEqual(ff.seen, [{ url: 'https://api.typesafe.ai/v1/models', auth: `Bearer ${FAKE_JEV}` }]);

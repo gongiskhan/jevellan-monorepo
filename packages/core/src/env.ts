@@ -10,7 +10,9 @@
 //   (the provider's model ids) for a Claude endpoint;
 // - CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1, and ENABLE_CLAUDEAI_MCP_SERVERS=false for Claude kinds (D-004);
 // - GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL from the machine's git config (D-004);
-// - PLAYWRIGHT_BROWSERS_PATH when the machine has ~/.cache/ms-playwright (D-004);
+// - PLAYWRIGHT_BROWSERS_PATH, the owner's Playwright browser cache (D-004): D-004 named ~/.cache/ms-playwright, the
+//   Linux folder, but on macOS Playwright keeps its browsers in ~/Library/Caches/ms-playwright (brief section 3), so
+//   both are looked for, the platform's own first, and the first that exists is used (playwrightBrowsersPath);
 // - JV_SESSION=<session id>, and JV_HOME, so the report MCP server and the Stop hook find this store even when
 //   JV_HOME is not ~/.jv (D-024) or the provider home has no .jv link (Codex homes, D-016).
 //
@@ -79,6 +81,22 @@ export function ownerHome(): string {
   return homedir();
 }
 
+/** Where Playwright keeps its browsers under a home: macOS's cache folder and the XDG one, in the order looked for. */
+export function playwrightCacheFolders(home: string, platform: NodeJS.Platform = process.platform): string[] {
+  const mac = join(home, 'Library', 'Caches', 'ms-playwright');
+  const xdg = join(home, '.cache', 'ms-playwright');
+  return platform === 'darwin' ? [mac, xdg] : [xdg, mac];
+}
+
+/**
+ * The PLAYWRIGHT_BROWSERS_PATH of workers and landing checks (D-004): the first of the owner's Playwright cache
+ * folders that exists, the platform's own first, or undefined when the owner has none. A provider HOME has no
+ * browsers, so without it Playwright would look for them there.
+ */
+export function playwrightBrowsersPath(home: string = ownerHome(), platform: NodeJS.Platform = process.platform): string | undefined {
+  return playwrightCacheFolders(home, platform).find((dir) => existsSync(dir));
+}
+
 let cachedIdentity: GitIdentity | undefined;
 
 /** The machine's git identity (user.name, user.email), read with the owner's home, once per process. */
@@ -113,8 +131,10 @@ export interface MinimalEnvironmentOptions {
   gitIdentity?: GitIdentity;
   /** Default: bootstrapNode(). */
   nodeBinary?: string;
-  /** The owner's own home, where ~/.cache/ms-playwright lives (default: ownerHome()). */
+  /** The owner's own home, where the Playwright browser cache lives (default: ownerHome()). */
   ownerHome?: string;
+  /** The platform whose Playwright cache folder is looked for first (default: process.platform). */
+  platform?: NodeJS.Platform;
   /** Sign in with the home's own .credentials.json, not the tokenFile (providers.providerEnv). */
   homeLogin?: boolean;
 }
@@ -155,8 +175,8 @@ export function minimalEnvironment(options: MinimalEnvironmentOptions): Record<s
     env.GIT_COMMITTER_EMAIL = identity.email;
   }
 
-  const browsers = join(options.ownerHome ?? ownerHome(), '.cache', 'ms-playwright');
-  if (existsSync(browsers)) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+  const browsers = playwrightBrowsersPath(options.ownerHome ?? ownerHome(), options.platform ?? process.platform);
+  if (browsers !== undefined) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
 
   env.JV_HOME = paths.home;
   if (options.sessionId) env.JV_SESSION = options.sessionId;
