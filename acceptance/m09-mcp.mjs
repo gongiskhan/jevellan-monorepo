@@ -211,7 +211,7 @@ async function stdioPart({ home, dir, expected, offline, reads }) {
       const r = run(
         CLAUDE,
         ['-p', PROMPT, '--mcp-config', config, '--strict-mcp-config', '--setting-sources', 'user', '--permission-mode', 'dontAsk', '--allowedTools', allowed, '--max-turns', '3', '--output-format', 'json'],
-        { cwd: dir, env: { ...childEnv(), HOME: claudeHome, CLAUDE_CODE_OAUTH_TOKEN: token, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }, timeoutMs: 300_000 },
+        { cwd: dir, env: { ...childEnv(), HOME: claudeHome, CLAUDE_CODE_OAUTH_TOKEN: token, ENABLE_CLAUDEAI_MCP_SERVERS: 'false', ENABLE_TOOL_SEARCH: 'false' }, timeoutMs: 300_000 },
       );
       const answer = r.json?.result ?? '';
       const ok = r.code === 0 && r.json?.is_error !== true && /project/i.test(answer) && mentionsCount(answer, expected.length);

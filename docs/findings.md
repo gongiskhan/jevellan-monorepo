@@ -171,3 +171,19 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   a task itself when a slot is free). The skill bodies are the skills run's (brief section 11); the README's bot
   section says what the bot does, and a skills change that names the bot in the coordinator's status guidance is a
   request recorded here.
+
+## 2026-11-01 Phase 3: the control MCP
+
+- `@modelcontextprotocol/sdk` 1.32.2 takes zod 4.6.7 object schemas in `registerTool` directly (no `zod/v3`
+  import); `tools/list` shows them as draft-07 JSON Schema with `required`, `enum`, `minLength` and descriptions.
+- M9 (`node acceptance/m09-mcp.mjs`, 9 s): 34 tools served over stdio and HTTP; a Claude Code 2.1.316 session (`-p`,
+  `--mcp-config` on `bin/jv.mjs mcp`, `--strict-mcp-config`, `--permission-mode dontAsk`, the read tools allowed,
+  `--max-turns 3`) answered "There is 1 project: jv-mono-sandbox ..."; HTTP `tools/list` with the token 200, without
+  or with a wrong token 401 with an empty body, `GET /health` 200 `{"ok":true,"version":"0.1.0"}`; `mcp.log` holds
+  one line per call and no argument; no secret in the store or logs.
+- Claude Code 2.1.316 defers MCP tools behind its ToolSearch tool by default: with `--max-turns 3` the first run
+  spent its turns finding the tool and stopped on `tool_use` (exit 1). With `ENABLE_TOOL_SEARCH=false` in the
+  session's environment the jv tools load up front and the question is answered in 3 turns. The README's
+  registration command needs nothing of this for an ordinary interactive session.
+- The session ran with HOME a folder of the run and the temporary home's claude-main token; `~/.claude.json` of the
+  owner had the same sha1 before and after.
