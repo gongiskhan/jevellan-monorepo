@@ -9,7 +9,7 @@
 // Usage: node acceptance/m16-no-leaks.mjs
 // Exit 0 when every check passes, 1 otherwise. Writes acceptance/results/m16.json.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ACCEPT_DIR, CHECKOUT, check, finish, HOME, leakCheck, log, NODE, note, REAL_JV_HOME, run, runJourney, SANDBOX, SANDBOX_CLONE } from './lib.mjs';
 
@@ -31,7 +31,9 @@ async function main() {
   const started = Date.now();
   log('M16 No leaks');
   const store = join(REAL_JV_HOME, 'store.sqlite');
-  const targets = [store, `${store}-wal`, `${store}.v1.bak`, join(REAL_JV_HOME, 'logs'), ...evidenceFolders(), ACCEPT_DIR].filter((p) => existsSync(p));
+  // Every copy of the store the migration can leave: the backup and the ones it sets aside (M-094), with their journals.
+  const copies = readdirSync(REAL_JV_HOME).filter((f) => f.startsWith('store.sqlite.v1.bak')).map((f) => join(REAL_JV_HOME, f));
+  const targets = [store, `${store}-wal`, ...copies, join(REAL_JV_HOME, 'logs'), ...evidenceFolders(), ACCEPT_DIR].filter((p) => existsSync(p));
   note(`checked: ${targets.map((t) => t.replace(HOME, '~')).join(', ')}`);
 
   await check('no secret file content and no token variable in the store, logs, evidence or acceptance/', () => {
