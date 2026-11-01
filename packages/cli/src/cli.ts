@@ -38,7 +38,7 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
     module: './commands/providers.js',
     usage: 'jv providers check | jv providers login <name>',
   },
-  status: { module: './commands/status.js', usage: 'jv status [--project N]' },
+  status: { module: './commands/status.js', booleans: ['watch'], usage: 'jv status [--project N] [--watch]' },
   task: {
     module: './commands/task.js',
     booleans: ['visible', 'discard', 'undo', 'keep'],
