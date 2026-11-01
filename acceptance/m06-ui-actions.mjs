@@ -104,6 +104,16 @@ async function postOf(page, path, action) {
   return { body: request.postDataJSON(), status: response?.status(), answer: await response?.json().catch(() => undefined) };
 }
 
+/** Whether a process with this pid exists (EPERM counts: it exists, it is someone else's). */
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
 async function main() {
   const { flags } = parseFlags(process.argv.slice(2), { values: ['timeout-min'], usage: USAGE });
   const timeoutMs = Number(flags['timeout-min'] ?? 20) * 60_000;
@@ -233,8 +243,11 @@ async function main() {
       const t = taskRow(home, taskId);
       const end = queryOne(storeFile(home), "SELECT payload FROM events WHERE session_id = ? AND kind = 'end' ORDER BY id DESC LIMIT 1", answerRun.id);
       await toolbar.getByRole('button', { name: 'Stop' }).waitFor({ state: 'detached', timeout: 15_000 });
-      const ok = post.status === 200 && JSON.stringify(post.body) === '{}' && r?.state === 'stopped' && r.state_reason === 'stopped by the owner' && t?.state === 'running' && t.state_reason.includes(`jv task resume ${taskId} continues`);
-      return { ok, detail: `POST ${JSON.stringify(post.body)} -> ${post.status}; run ${r?.id} ${r?.state} (${r?.state_reason}); end event ${end?.payload ?? 'none'}; task ${t?.state}: ${t?.state_reason}` };
+      // The run's process really ends: jv signals a group only when it can show it is the run's (M-087), and a stop
+      // that left the turn running would race the resume below.
+      const gone = await waitFor(() => (pidAlive(live.pid) ? undefined : true), { timeoutMs: 15_000, intervalMs: 250 });
+      const ok = post.status === 200 && JSON.stringify(post.body) === '{}' && r?.state === 'stopped' && r.state_reason === 'stopped by the owner' && t?.state === 'running' && t.state_reason.includes(`jv task resume ${taskId} continues`) && !!gone;
+      return { ok, detail: `POST ${JSON.stringify(post.body)} -> ${post.status}; run ${r?.id} ${r?.state} (${r?.state_reason}); its process ${live.pid} ${gone ? 'ended' : 'still running'}; end event ${end?.payload ?? 'none'}; task ${t?.state}: ${t?.state_reason}` };
     });
 
     await check('Override offers the providers.json menu and records the pick on the step (mode keep)', async () => {
