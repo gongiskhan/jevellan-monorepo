@@ -681,3 +681,82 @@ temporary file is the same file the real run writes (the same program, Node bina
 keys; only HOME and JV_HOME differ), `plutil -lint` checks it, and `launchctl list` shows no `dev.jevellan.bot`.
 `node acceptance/m14-service-file.mjs --real` writes the real file for an owner who wants it; the README gives the
 two commands.
+
+## M-072 M6 runs one single task on the sandbox clone
+
+M6 uses one `single` implement task on `jv-mono-sandbox-clone`, because its step commits on the task branch and a
+journey never dirties the main sandbox (M-058). A single task never lands: after its last step it is done, so the
+clone's main stays as it was and only the task's `jv/...` branch is left. The task text tells the step, in order, to
+commit `notes/m06-committed.txt`, leave `notes/m06-uncommitted.txt` uncommitted, and report needs-decision "Which
+colour?" with Blue and Green; after the answer it runs `sleep 45` before writing `notes/colour.txt`, so the answer
+turn has a live run for the action bar's Stop. The actions run on that task in the order Stop, Override, Resume, so the
+override is recorded while the step still has work. The Changes modal is checked while the task waits on the owner.
+
+## M-073 M6 exercises Override in mode keep
+
+The journey picks a model, effort and provider from the providers.json menu (M-068) and posts the override in mode
+keep, then checks `override_json` and `override_mode` keep on the step's newest placement decision and that no run was
+started. Mode undo stops the session and starts the step again in a new native session that rereads the task and could
+ask the question again, which would make the later checks depend on the model rather than the UI; undo's rows are
+covered by core's unit tests.
+
+## M-074 Resume in the task page follows core's resumeTask
+
+The action bar offers Resume when no run is live and the task is neither done nor discarded, and the task waits on the
+owner, is queued, or has a newest run that is stopped, lost or waiting: the brief's "Resume (when stopped, lost or
+waiting)" read as run states. A Stop without discard keeps the task's own state (core `stopTask`), so the earlier gate
+on task state `stopped` left Resume disabled after the bar's own Stop. Task state `stopped` means discarded, which core
+refuses to resume, so it no longer offers Resume. A failed task whose newest run is stopped, lost or waiting is offered
+Resume, because core accepts it.
+
+## M-075 The Changes file column
+
+The Changes modal's file column is `minmax(220px, min(400px, 36%))` instead of Jevellan's 340 px: an uncommitted row
+carries its "uncommitted" chip beside the path, which Jevellan never had, and at 340 px a 25-character path was cut.
+
+## M-076 Journey screenshots are committed under acceptance/shots
+
+The brief puts the journeys' screenshots under `acceptance/shots/`, so the ones that show a journey's result are
+tracked (M6, M7, M8 and M15; viewport size, or M15's full-page phone pages; tens to hundreds of KB each) and M15 also
+copies its own to `~/.jevellan-build/manager/shots/`. Every other screenshot a journey takes goes to its run folder or
+`acceptance/results/` (gitignored).
+
+## M-077 M7 measures the turn-ending reply in the page
+
+The 10 s check runs from the composer's Enter to the moment the page shows the coordinator text that ends the turn
+(the reply that carries the response time, not a preamble). A MutationObserver in the page stamps each new reply;
+after the turn settles, the transcript names the reply that ended it and its stamp is used. Nothing calls the
+transcript route during the timed turn, because that route tails the transcript and would make the page faster than
+what the owner sees through the server's 1 s tail. The limit stays the brief's 10 s.
+
+## M-078 Chat tool lines write the installed jv as jv
+
+The coordinator's prompt fills `{{jv}}` with the shim's absolute path, so it runs jv by that path in every Bash call.
+`coordinatorTranscript`'s tool summary replaces that exact path (`paths.shim`, as a whole word) with `jv`, so the line
+reads "ran jv status --json --project P". Other paths and tools are left as they are, and the tool's input keeps the
+full command for the expanded view.
+
+## M-079 M7 checks the marks a coordinator would leave in ~/.claude.json
+
+The owner's live Claude Code sessions write `~/.claude.json` on their own schedule, so a sha1 comparison over the
+coordinator's life can change for reasons unrelated to jv. The sha1 check stays strict and names the top-level keys
+that changed (by hash, never content). A second check covers what a Claude Code process with HOME set to the owner's
+home would leave: `numStartups`, the sha1 of the sandbox's `projects` entry, and the coordinator's native session id.
+The transcript under `<home>/homes/claude-main/.claude/projects/` is the direct evidence of the coordinator's HOME.
+
+## M-080 M8 uses a real waiting step for the report fixture
+
+Part one of M8 creates a real read-only investigate task whose step reports needs-decision; once the task waits on the
+owner, the journey writes the fixture's `ui` (a v0.9 surface and one "1.0" createSurface) into that report's
+`ui_json`. Pressing the surface then goes through `answerTask` into a real resumed turn of the same native session,
+whose `message` event, `delivered_at` and final report show that the step received "From the owner: <label>"; a fake
+runtime could not show that. Both M8 tasks are read-only, so they run on the main sandbox.
+
+## M-081 A surface's sent state comes from the store
+
+`jv task show --json` gives each message whose `meta_json` holds an object a `meta` key with that object (the raw A2UI
+action of a UI action); no other message has the key, so existing outputs are unchanged. The task and session pages
+give such a message to the newest report of the task that names its surfaceId and is not newer than the message; that
+surface shows dimmed and inert with "Sent to the step at HH:MM" at the message's time, with the sent values written
+back into its data model. The sent state so survives a reload and shows on every device while the server keeps no UI
+state (M-066). A surface on a done or stopped task is inert with "Task <state>: the surface takes no input.".

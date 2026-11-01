@@ -214,3 +214,32 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
 - 2026-11-01 Real UI server and web app, smoke on a temporary home with a project, a schedule, a goal, a memory and a
   queued job: the projects, project, memory, schedules, goals, jobs, decisions, usage, bot, doctor and not-found pages
   at 1280 by 800 light and 390 by 844 dark, with no console error, no failed API call and no sideways scroll.
+- 2026-11-01 M6 UI actions: 11/11 in 1 min 35 s. In three runs out of three Jev placed the step on claude-sdk
+  (claude-main, Sonnet medium); the first turn took 13 to 19 s, the answer turn with its 45 s sleep about 60 s. The
+  needs-decision report, the answer turn (`answer:<message>`), the Stop and the Resume turn (`resume:<run>`) all stayed
+  on one Claude native session.
+- 2026-11-01 M6 found that the task page's Resume stayed disabled after Stop from the same action bar (core keeps the
+  task running and marks only the run stopped) and that a discarded task offered Resume, which core refuses; both
+  fixed with a web check (M-074). Also fixed: a path cut beside the "uncommitted" chip in Changes, the datalist
+  indicator and a 6 px legend offset in the Override dialog.
+- 2026-11-01 M7 Coordinator chat: 13/13 in 35 s. The coordinator (claude-main, Opus high, token login) was ready 1.8 s
+  after `jv coordinator start`; its first status reply had responseMs 4255. The composer's "status" was typed into the
+  pane 0.2 s after Enter and the reply was visible 5.1 s after Enter with responseMs 3983, so the page path (POST,
+  typing, the 1 s tail, the change event, refetch) added 1.1 s. Two earlier runs: 4.4 s and 5.3 s.
+- 2026-11-01 The owner's `~/.claude.json` changes during a journey without jv touching it: over one coordinator's 25 s
+  life its sha1 changed in `cachedGrowthBookFeaturesAt` and `promptQueueUseCount`, written by the owner's own live
+  sessions, while `numStartups` and the sandbox's `projects` entry stayed the same (M-079).
+- 2026-11-01 Claude Code 2.1.316 in the coordinator pane shows each owner line as "[owner]  status" in the scrollback,
+  "esc to interrupt" while working and a "done" line after each turn. Before M-078 the chat's tool lines read
+  "ran /Users/ggomes/.jv-test/<run>/home/bin/jv stat..." cut at the column width.
+- 2026-11-01 M8 A2UI: 23/23 in 37 s. Jev placed both read-only steps on claude-haiku-5-5 low via claude-main; each
+  reported needs-decision within 10 to 15 s and each resumed turn ended within 3 to 6 s. A real step copied a v0.9
+  surface given as JSON in its task text into `jv_report`'s `ui` exactly. Pressing its Button named answer posted
+  `{name, surfaceId, sourceComponentId, timestamp, context: {label}}`; the server made it `jv task answer` with a
+  messages row whose `meta_json` equals the action; the resumed turn's prompt was exactly "From the owner: <label>" and
+  the final report named the option.
+- 2026-11-01 A2UI "1.0" in the browser: a "1.0" createSurface next to a v0.9 surface in one report shows "UI not
+  rendered: unsupported version" above the v0.9 surface, which still renders and posts; the summary, question, option
+  buttons and status are unaffected. This confirms the Node finding on the real task page.
+- 2026-11-01 Before M-081, reloading the task page after an A2UI post brought the surface back active with the step's
+  first value, and pressing it again was refused ("task T is done, not waiting on an answer").
