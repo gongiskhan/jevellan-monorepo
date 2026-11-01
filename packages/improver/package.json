@@ -1,0 +1,35 @@
+{
+  "name": "jevellan-improver",
+  "version": "0.1.0",
+  "description": "The Jevellan improver: jobs that tidy memory, update documentation and propose skill changes from the evidence.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git",
+    "directory": "packages/improver"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "jevellan-core": "0.1.0",
+    "jevellan-memory": "0.1.0",
+    "zod": "4.6.7"
+  }
+}

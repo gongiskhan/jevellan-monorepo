@@ -16,6 +16,8 @@
     "packages/core",
     "packages/memory",
     "packages/scheduler",
+    "packages/planner",
+    "packages/improver",
     "packages/mcp",
     "packages/ui",
     "packages/cli"

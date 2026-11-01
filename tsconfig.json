@@ -11,6 +11,12 @@
       "path": "packages/scheduler"
     },
     {
+      "path": "packages/planner"
+    },
+    {
+      "path": "packages/improver"
+    },
+    {
       "path": "packages/mcp"
     },
     {
