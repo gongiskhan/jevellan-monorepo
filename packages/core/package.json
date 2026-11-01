@@ -1,0 +1,43 @@
+{
+  "name": "jevellan-core",
+  "version": "0.1.0",
+  "description": "The jv engine as a library: the store, tasks, Jev placement, landing, runtimes, the coordinator and the worker tools.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git",
+    "directory": "packages/core"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "bin": {
+    "jv-worker-mcp": "dist/report-mcp.js",
+    "jv-report-mcp": "dist/report-mcp.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --import ./dist-test/test/setup.js --test \"dist-test/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.316",
+    "@openai/codex-sdk": "0.166.0",
+    "zod": "4.6.7"
+  }
+}

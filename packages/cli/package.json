@@ -1,0 +1,36 @@
+{
+  "name": "jevellan-cli",
+  "version": "0.1.0",
+  "description": "The jv command: tasks, landing, the coordinator, memory, schedules, goals, jobs, the bot, the UI and the control MCP.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git",
+    "directory": "packages/cli"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "jv": "dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "jevellan-core": "0.1.0",
+    "jevellan-ui": "0.1.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "jevellan-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Autonomous development, coordinated: the jv engine, command, control MCP, memory, UI, bot, scheduler, planner and improver.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/ui",
+    "packages/cli"
+  ],
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false",
+    "test": "npm run build && npm test --workspaces --if-present",
+    "lint": "eslint .",
+    "scan:secrets": "node scripts/secret-scan.mjs",
+    "journeys": "node acceptance/run-all.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.1"
+  }
+}

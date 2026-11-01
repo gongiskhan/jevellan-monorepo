@@ -1,0 +1,37 @@
+{
+  "name": "jevellan-ui",
+  "version": "0.1.0",
+  "description": "The Jevellan web app over the jv store: projects, the coordinator chat, tasks, sessions, memory, schedules, goals, jobs and the bot.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gongiskhan/jevellan-monorepo.git",
+    "directory": "packages/ui"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    "./server": {
+      "types": "./dist/server/server.d.ts",
+      "default": "./dist/server/server.js"
+    },
+    "./*": {
+      "types": "./dist/server/*.d.ts",
+      "default": "./dist/server/*.js"
+    }
+  },
+  "files": [
+    "dist",
+    "viewer"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "jevellan-core": "0.1.0"
+  }
+}
