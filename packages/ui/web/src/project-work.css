@@ -409,6 +409,7 @@ a.pw-tool:hover > span { text-decoration: underline; text-underline-offset: 2px;
 .pw-why .notice { margin: 0 0 7px; padding: 8px 10px; font-size: 12.5px; }
 /* Override: the two choices, each with what it does or why it is refused, then the fields of the chosen one. */
 .pw-override-modes { margin: 0 0 14px; padding: 0; border: 0; }
+.pw-override-modes legend { padding: 0; }
 .pw-override-modes label { margin: 0; font-size: 13px; color: var(--ink); }
 .pw-override-modes label.pw-disabled { color: var(--ink-3); }
 .pw-override-modes .pw-radio-note { margin: 3px 0 12px 24px; }

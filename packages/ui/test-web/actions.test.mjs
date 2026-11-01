@@ -2,8 +2,8 @@
 // What the web app does, checked in headless Chromium against the mock UI server (brief section 7): the sign-in
 // error, the options as buttons posting jv task answer, the A2UI Button posting the renderer's action to ui-action
 // and dimming the surface, a version "1.0" surface shown as unsupported, the Changes modal with committed and
-// uncommitted files, the sidebar collapse that survives a reload, Stop only with a live session, Override, the
-// landing ask, the coordinator composer and Start, the cron helper, memory archive, notes, the live stream, and the
+// uncommitted files, the sidebar collapse that survives a reload, Stop only with a live session, Resume after a Stop
+// and never for a discarded task, Override, the landing ask, the coordinator composer and Start, the cron helper, memory archive, notes, the live stream, and the
 // read-only mode that offers no action.
 
 import assert from 'node:assert/strict';
@@ -159,6 +159,26 @@ describe('task page', () => {
     const [post] = await until(() => posts('/api/tasks/T7FDA1R/stop', from).length && posts('/api/tasks/T7FDA1R/stop', from));
     assert.deepEqual(post.body, { discard: true });
     await context.close();
+  });
+
+  test('Resume is offered after a Stop (the task still running, its newest run stopped) and posts resume; never for a discarded task', async () => {
+    const { context, page } = await open('/t/TSTOP01');
+    const toolbar = page.getByRole('toolbar', { name: 'Task actions' });
+    await toolbar.waitFor();
+    assert.equal(await toolbar.getByRole('button', { name: 'Stop' }).count(), 0);
+    const resume = toolbar.getByRole('button', { name: 'Resume' });
+    assert.equal(await resume.isEnabled(), true);
+    const from = mock.requests.length;
+    await resume.click();
+    const [post] = await until(() => posts('/api/tasks/TSTOP01/resume', from).length && posts('/api/tasks/TSTOP01/resume', from));
+    assert.deepEqual(post.body, {});
+    await page.getByText('Resumed.').waitFor();
+    await context.close();
+    const discarded = await open('/t/TDISC01');
+    const bar = discarded.page.getByRole('toolbar', { name: 'Task actions' });
+    await bar.waitFor();
+    assert.equal(await bar.getByRole('button', { name: 'Resume' }).isDisabled(), true);
+    await discarded.context.close();
   });
 
   test('Override offers the providers.json menu and posts the model, effort, provider and mode the owner picked', async () => {

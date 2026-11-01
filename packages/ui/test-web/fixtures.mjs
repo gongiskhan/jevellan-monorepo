@@ -164,6 +164,28 @@ export function buildFixtures(now = Date.now()) {
   landing.landings = [{ id: 'LPRICE1', route: 'ask-owner', state: 'asked', reason: 'Touches a risky area (src/billing); the owner decides.', commit: null, createdAt: ago(20), checks: [{ name: 'test', command: 'TZ=UTC npm test', passed: true, exitCode: 0, timedOut: false, durationMs: 8400, outcome: 'passed in 8.4 s' }, { name: 'lint', command: 'npm run lint', passed: false, exitCode: 1, timedOut: false, durationMs: 2100, outcome: 'failed (exit 1) in 2.1 s' }] }];
   views.set('TLAND01', landing);
 
+  // A Stop without discard keeps the task's state: TSTOP01 is still running and its newest run is stopped, which
+  // jv task resume continues. TDISC01 was discarded (task state stopped), which jv task resume refuses.
+  const stopped = clone(running);
+  stopped.id = 'TSTOP01';
+  stopped.title = 'README badges';
+  stopped.stateReason = 'R9STOP1 stopped by the owner; jv task resume TSTOP01 continues';
+  stopped.branch = 'jv/TSTOP01-badges';
+  stopped.children = [];
+  stopped.steps = running.steps.map((s) => clone(s));
+  stopped.steps[1].runs = [{ ...stopped.steps[1].runs[0], id: 'R9STOP1', state: 'stopped', stateReason: 'stopped by the owner', endedAt: ago(2), lastEventAt: ago(2) }];
+  views.set('TSTOP01', stopped);
+  const discarded = clone(stopped);
+  discarded.id = 'TDISC01';
+  discarded.title = 'README badges, discarded';
+  discarded.state = 'stopped';
+  discarded.stateReason = 'discarded by the owner; the worktree stays at /Users/owner/.jv/worktrees/shop/TDISC01';
+  discarded.branch = 'jv/TDISC01-badges';
+  discarded.steps[1].state = 'failed';
+  discarded.steps[1].stateReason = 'discarded by the owner';
+  discarded.steps[1].runs[0] = { ...discarded.steps[1].runs[0], id: 'R9DISC1', stateReason: 'discarded by the owner' };
+  views.set('TDISC01', discarded);
+
   const changes = {
     task: 'TA2UI01',
     branch: 'jv/TA2UI01-customers-empty-state',
