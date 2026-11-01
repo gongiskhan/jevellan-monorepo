@@ -37,7 +37,7 @@ const posts = (path, from = 0, m = mock) => m.requests.slice(from).filter((r) =>
 async function until(check, timeout = 5000) {
   const end = Date.now() + timeout;
   for (;;) {
-    const value = check();
+    const value = await check();
     if (value) return value;
     if (Date.now() > end) throw new Error('timed out waiting');
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -161,11 +161,17 @@ describe('task page', () => {
     await context.close();
   });
 
-  test('Override posts the model, effort, provider and mode the owner picked from the task data', async () => {
+  test('Override offers the providers.json menu and posts the model, effort, provider and mode the owner picked', async () => {
     const { context, page } = await open('/t/T7FDA1R');
     await page.getByRole('toolbar', { name: 'Task actions' }).getByRole('button', { name: 'Override' }).click();
     const dialog = page.getByRole('dialog', { name: 'Override T7FDA1R' });
     await dialog.getByLabel('Keep: record the override; the running session continues').check();
+    // The menu's models are suggested; a model the menu knows narrows the efforts and providers to its own.
+    await until(async () => (await dialog.locator('#override-models option').evaluateAll((os) => os.map((o) => o.getAttribute('value')))).includes('qwen3-coder'));
+    await dialog.getByLabel('Model').fill('qwen3-coder');
+    await until(async () => (await dialog.getByLabel('Provider').locator('option').allTextContents()).join('|') === 'Any that serves the model|local');
+    assert.deepEqual(await dialog.getByLabel('Effort').locator('option').allTextContents(), ['As the policy says', 'default']);
+    await dialog.getByLabel('Model').fill('claude-opus-5-5');
     await dialog.getByLabel('Effort').selectOption('xhigh');
     await dialog.getByLabel('Provider').selectOption('claude-second');
     const from = mock.requests.length;

@@ -195,3 +195,22 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   signal handlers, and the redacted warning line printed in between had become slow enough (more secret sources) for
   the test's SIGINT to arrive first. A 300 ms delay made it pass, which confirmed the race. Fixed at the source: the
   server and `jv ui` now arm SIGTERM and SIGINT before the ready line (M-059); `jv bot start` already did.
+- 2026-11-01 zod: both majors install side by side, as the brief expects. `npm ls zod` exits 0; the root and core,
+  mcp, memory, planner and improver resolve zod 4.6.7; `packages/ui/node_modules/zod` is 3.25.76, and npm nests
+  further 3.25.76 copies under `@a2ui/react` and `@a2ui/web_core`. The web bundle came out byte-identical with and
+  without the Vite alias that points bare `zod` at the ui copy.
+- 2026-11-01 A2UI `version: "1.0"` with @a2ui 0.14.0: not rendered. In Node with the processor and the report fixture,
+  `version: "1.0"` fails validation (the v1.0 adapter's schema expects the literal "v1.0"); "v1.0" with the v0.9
+  basic catalog is refused (catalog spec 0.9 does not match message version v1.0); "v1.0" with
+  `@a2ui/web_core/catalogs/basic/v1` gets as far as component validation and refuses v0.9 component shapes (Text
+  variant `h3`). So 1.0 surfaces would need "v1.0", the v1 catalog and 1.0 component shapes. The page shows
+  "UI not rendered: unsupported version" and the rest of the report, as the brief specifies; core's contract keeps
+  accepting "1.0".
+- 2026-11-01 `@a2ui/react/styles/structural.css`, which the brief names, does not exist in 0.14.0: the export points
+  at a file the package does not ship, and its `styles` entry holds the v0.8 renderer's `.a2ui-surface` rules. The v0.9
+  basic catalog adopts its own element styles, and `a2ui-theme.css` maps them to the app's tokens (M-062).
+- 2026-11-01 npm audit after the uiweb merge: dompurify 3.4.11 (critical, under @a2ui/markdown-it) and zod 3.25.76
+  (high, nested under @a2ui). dompurify raised to 3.4.17 by an override (M-070); zod 3 left to the owner.
+- 2026-11-01 Real UI server and web app, smoke on a temporary home with a project, a schedule, a goal, a memory and a
+  queued job: the projects, project, memory, schedules, goals, jobs, decisions, usage, bot, doctor and not-found pages
+  at 1280 by 800 light and 390 by 844 dark, with no console error, no failed API call and no sideways scroll.

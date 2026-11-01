@@ -190,6 +190,7 @@ export async function startMockServer({ port = 0, readonly = false, dist = DIST 
     }
     if (path === '/api/doctor') return json(res, 200, data.doctor);
     if (path === '/api/bot') return json(res, 200, data.bot);
+    if (path === '/api/providers') return json(res, 200, data.providers);
     return fail(res, `endpoint ${path}`, 3);
   }
 

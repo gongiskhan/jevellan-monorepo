@@ -33,6 +33,7 @@ import { readNotes } from 'jevellan-core/handoff';
 import { normalizeId } from 'jevellan-core/ids';
 import { writeNotes } from 'jevellan-core/notes';
 import { paths } from 'jevellan-core/paths';
+import { loadProviders } from 'jevellan-core/providers';
 import { openStore, type Store } from 'jevellan-core/store';
 import { listTaskSummaries, type TaskDeps } from 'jevellan-core/tasks';
 import { TASK_KINDS, type GoalRow, type SessionRow } from 'jevellan-core/types';
@@ -259,6 +260,19 @@ interface ApiRoute {
   handle(ctx: RouteContext): Promise<void> | void;
 }
 
+/**
+ * The providers.json menu the Override dialog offers (M-068): per enabled provider its name, kind and models (id,
+ * label, efforts). Never a key file, token file, home or URL.
+ */
+export function providersMenu(file?: string): { providers: Array<{ name: string; kind: string; models: Array<{ id: string; label: string; efforts: string[] }> }> } {
+  const config = loadProviders(file);
+  return {
+    providers: config.providers
+      .filter((p) => p.enabled)
+      .map((p) => ({ name: p.name, kind: p.kind, models: p.models.map((m) => ({ id: m.id, label: m.label, efforts: [...m.efforts] })) })),
+  };
+}
+
 export async function startUiServer(options: UiServerOptions = {}): Promise<UiServer> {
   const bind = validateBind(options.bind ?? DEFAULT_BIND);
   const port = options.port ?? DEFAULT_PORT;
@@ -435,6 +449,9 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   });
   add('GET', '/api/projects/:name/workflows', (ctx) => {
     sendJson(ctx.res, 200, { workflows: projectWorkflows(projectName(ctx.params.name)) }, ctx.head);
+  });
+  add('GET', '/api/providers', (ctx) => {
+    sendJson(ctx.res, 200, providersMenu(), ctx.head);
   });
   add('POST', '/api/goals/:id/pause', (ctx) => {
     const id = normalizeId(ctx.params.id ?? '');

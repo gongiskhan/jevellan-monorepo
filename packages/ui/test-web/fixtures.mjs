@@ -161,7 +161,7 @@ export function buildFixtures(now = Date.now()) {
   landing.branch = 'jv/TLAND01-pricing';
   landing.steps = running.steps.map((s) => ({ ...clone(s), state: 'done', runs: s.runs.map((r) => ({ ...r, state: 'done', endedAt: r.endedAt ?? ago(21) })) }));
   landing.children = [];
-  landing.landings = [{ id: 'LPRICE1', route: 'ask-owner', state: 'asked', reason: 'Touches a risky area (src/billing); the owner decides.', commit: null, createdAt: ago(20), checks: [{ name: 'TZ=UTC npm test', passed: true, outcome: 'passed' }, { name: 'npm run lint', passed: true, outcome: 'passed' }] }];
+  landing.landings = [{ id: 'LPRICE1', route: 'ask-owner', state: 'asked', reason: 'Touches a risky area (src/billing); the owner decides.', commit: null, createdAt: ago(20), checks: [{ name: 'test', command: 'TZ=UTC npm test', passed: true, exitCode: 0, timedOut: false, durationMs: 8400, outcome: 'passed in 8.4 s' }, { name: 'lint', command: 'npm run lint', passed: false, exitCode: 1, timedOut: false, durationMs: 2100, outcome: 'failed (exit 1) in 2.1 s' }] }];
   views.set('TLAND01', landing);
 
   const changes = {
@@ -328,7 +328,16 @@ export function buildFixtures(now = Date.now()) {
   for (const view of views.values()) for (const step of view.steps) for (const run of step.runs) if (run.report) reports.set(run.id, run.report);
   eventsBySession.set('RA2UI01', shift(events, 33 * 60_000).map((e) => ({ ...e, session_id: 'RA2UI01' })));
 
-  return { projects, status, tasks, views, changes, transcript, memories, schedules, goals, jobs, usage, decisions, doctor, bot, notes, workflows, reports, eventsBySession };
+  // GET /api/providers: the providers.json menu of the Override dialog (M-068).
+  const providers = {
+    providers: [
+      { name: 'claude-main', kind: 'claude-subscription', models: [{ id: 'claude-opus-5-5', label: 'Opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { id: 'claude-haiku-5-5', label: 'Haiku', efforts: ['low', 'medium'] }] },
+      { name: 'claude-second', kind: 'claude-subscription', models: [{ id: 'claude-opus-5-5', label: 'Opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }] },
+      { name: 'local', kind: 'openai-compatible', models: [{ id: 'qwen3-coder', label: 'Qwen3 Coder', efforts: ['default'] }] },
+    ],
+  };
+
+  return { projects, status, tasks, views, changes, transcript, memories, schedules, goals, jobs, usage, decisions, doctor, bot, providers, notes, workflows, reports, eventsBySession };
 }
 
 export function isoWeek(at) {

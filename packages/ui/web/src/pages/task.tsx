@@ -8,13 +8,13 @@
 // landing ask (core answerTask takes exactly those two labels).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { answerTask, getTask, messageTask, overrideTask, resumeTask, stopTask, useAction, useResource } from '../api.js';
+import { answerTask, getProviders, getTask, messageTask, overrideTask, resumeTask, stopTask, useAction, useResource } from '../api.js';
 import { CommandLine, Confirm, ErrorLine, Loading, Modal, OriginChip, RouteLink, Stamp, StateChip, StateDot, useApp, useNow } from '../components.js';
 import { Icon } from '../icons.js';
 import { AnswerOptions, ReportCard } from '../report.js';
 import { relativeDuration } from '../time.js';
 import { TaskChangesModal } from '../worktree-changes.js';
-import type { Placement, RunView, StepView, TaskView } from '../types.js';
+import type { Placement, ProvidersMenu, RunView, StepView, TaskView } from '../types.js';
 
 const LIVE = ['queued', 'starting', 'running'];
 const short = (sha: string | null) => (sha ? sha.slice(0, 10) : null);
@@ -184,18 +184,16 @@ function LandingBlock({ task }: { task: TaskView }) {
             {landing.commit && <code className="landing-commit">{short(landing.commit)}</code>}
           </div>
           {landing.reason && <p className="landing-reason">{landing.reason}</p>}
-          {landing.checks && landing.checks.length > 0 && (
+          {landing.checks.length > 0 && (
             <ul className="landing-checks">
-              {landing.checks.map((check, index) => {
-                const ok = check.passed ?? check.ok ?? check.outcome === 'passed';
-                return (
-                  <li key={index} className={ok ? 'check-ok' : 'check-failed'}>
-                    <Icon name={ok ? 'check' : 'cross'} size={13} />
-                    <span>{check.name ?? check.command ?? 'check'}</span>
-                    {check.outcome && <span className="muted"> {check.outcome}</span>}
-                  </li>
-                );
-              })}
+              {landing.checks.map((check, index) => (
+                <li key={index} className={check.passed ? 'check-ok' : 'check-failed'}>
+                  <Icon name={check.passed ? 'check' : 'cross'} size={13} />
+                  <span>{check.name}</span>
+                  {check.command && check.command !== check.name && <code className="small-text">{check.command}</code>}
+                  <span className="muted"> {check.outcome}</span>
+                </li>
+              ))}
             </ul>
           )}
         </div>
@@ -292,33 +290,57 @@ function StopDialog({ task, close }: { task: TaskView; close(): void }) {
   );
 }
 
-/** The models, efforts and providers the task's own data names: its runs and placements (no hard-coded names). */
-function placementChoices(task: TaskView) {
+/**
+ * What the Override dialog offers: the providers.json menu (M-068) with the task's own placements first (its runs, Jev's
+ * chosen model, effort options and eligible candidates), so the likely choices lead. Efforts and providers follow the
+ * model typed when the menu knows it. Without the menu (an error) the task's data alone is offered.
+ */
+function overrideChoices(task: TaskView, menu: ProvidersMenu | undefined, model: string) {
   const models = new Map<string, string>();
-  const efforts = new Set<string>();
-  const providers = new Set<string>();
+  const taskEfforts = new Set<string>();
+  const taskProviders = new Set<string>();
   for (const step of task.steps) {
     for (const run of step.runs) {
       if (run.model) models.set(run.model, models.get(run.model) ?? run.model);
-      if (run.effort) efforts.add(run.effort);
-      if (run.provider) providers.add(run.provider);
+      if (run.effort) taskEfforts.add(run.effort);
+      if (run.provider) taskProviders.add(run.provider);
     }
     for (const p of step.placements) {
       const c = p.chosen;
       if (c?.model) models.set(c.model, c.label ? `${c.label} (${c.model})` : c.model);
-      if (c?.effort) efforts.add(c.effort);
-      for (const option of Object.keys(c?.choices?.effort?.probabilities ?? {})) efforts.add(option);
-      if (c?.provider) providers.add(c.provider);
-      for (const candidate of c?.candidates ?? []) if (candidate.eligible !== false) providers.add(candidate.name);
+      if (c?.effort) taskEfforts.add(c.effort);
+      for (const option of Object.keys(c?.choices?.effort?.probabilities ?? {})) taskEfforts.add(option);
+      if (c?.provider) taskProviders.add(c.provider);
+      for (const candidate of c?.candidates ?? []) if (candidate.eligible !== false) taskProviders.add(candidate.name);
     }
+  }
+  const efforts = new Set<string>();
+  const providers = new Set<string>();
+  for (const p of menu?.providers ?? []) {
+    for (const m of p.models) {
+      models.set(m.id, `${m.label} (${m.id})`);
+      if (m.id === model.trim()) {
+        for (const e of m.efforts) efforts.add(e);
+        providers.add(p.name);
+      }
+    }
+  }
+  if (!menu || efforts.size === 0) {
+    for (const e of taskEfforts) efforts.add(e);
+    for (const p of menu?.providers ?? []) for (const m of p.models) for (const e of m.efforts) efforts.add(e);
+  }
+  if (!menu || providers.size === 0) {
+    for (const p of taskProviders) providers.add(p);
+    for (const p of menu?.providers ?? []) providers.add(p.name);
   }
   return { models: [...models], efforts: [...efforts], providers: [...providers] };
 }
 
 function OverrideDialog({ task, close }: { task: TaskView; close(): void }) {
-  const choices = placementChoices(task);
+  const menu = useResource('providers', (signal) => getProviders(signal), { live: false });
   const current = latestRun(task);
-  const [model, setModel] = useState(current?.model ?? choices.models[0]?.[0] ?? '');
+  const [model, setModel] = useState(current?.model ?? overrideChoices(task, undefined, '').models[0]?.[0] ?? '');
+  const choices = overrideChoices(task, menu.data, model);
   const [effort, setEffort] = useState(current?.effort ?? '');
   const [provider, setProvider] = useState(current?.provider ?? '');
   const [mode, setMode] = useState<'undo' | 'keep'>('undo');
@@ -353,7 +375,7 @@ function OverrideDialog({ task, close }: { task: TaskView; close(): void }) {
         <div className="form-grid">
           <label>
             Model
-            <input required list="override-models" value={model} onChange={(event) => setModel(event.target.value)} />
+            <input required aria-label="Model" list="override-models" value={model} onChange={(event) => setModel(event.target.value)} />
             <datalist id="override-models">
               {choices.models.map(([id, label]) => (
                 <option key={id} value={id}>
@@ -364,7 +386,7 @@ function OverrideDialog({ task, close }: { task: TaskView; close(): void }) {
           </label>
           <label>
             Effort
-            <select value={effort} onChange={(event) => setEffort(event.target.value)}>
+            <select aria-label="Effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
               <option value="">As the policy says</option>
               {choices.efforts.map((e) => (
                 <option key={e} value={e}>
@@ -375,7 +397,7 @@ function OverrideDialog({ task, close }: { task: TaskView; close(): void }) {
           </label>
           <label>
             Provider
-            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+            <select aria-label="Provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
               <option value="">Any that serves the model</option>
               {choices.providers.map((p) => (
                 <option key={p} value={p}>

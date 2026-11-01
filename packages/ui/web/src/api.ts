@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BotPage,
+  ProvidersMenu,
   CoordinatorStatus,
   CoordinatorTranscript,
   DecisionsPage,
@@ -207,6 +208,7 @@ export const getDecisions = (params: { kind?: string; from?: string; to?: string
   get<DecisionsPage>(`/api/decisions${query(params)}`, signal);
 export const getDoctor = (signal?: AbortSignal) => get<DoctorResult>('/api/doctor', signal);
 export const getBot = (signal?: AbortSignal) => get<BotPage>('/api/bot', signal);
+export const getProviders = (signal?: AbortSignal) => get<ProvidersMenu>('/api/providers', signal);
 
 // ---- the live stream ----------------------------------------------------------------------------------------------
 

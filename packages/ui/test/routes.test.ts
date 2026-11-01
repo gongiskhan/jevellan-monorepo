@@ -365,6 +365,24 @@ test('the schedule preview prints the next three runs of a cron in a time zone',
   assert.equal((await client.get('/api/schedules/preview')).status, 400);
 });
 
+test('GET /api/providers is the providers.json menu of the Override dialog: names, kinds and models, no file or home', async () => {
+  const r = await client.get('/api/providers');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json(), {
+    providers: [
+      {
+        name: 'claude-main',
+        kind: 'claude-subscription',
+        models: [
+          { id: 'claude-opus-5-5', label: 'Opus', efforts: ['low', 'medium', 'high', 'max'] },
+          { id: 'claude-haiku-5-5', label: 'Haiku', efforts: ['low'] },
+        ],
+      },
+    ],
+  });
+  assert.doesNotMatch(r.text, /secrets|tokenFile|keyFile|homes/);
+});
+
 test('POST /api/goals/:id/pause pauses an open goal and answers {goal}', async () => {
   const p = store.getProjectByName('sandbox')!;
   const g = store.createGoal({ project_id: p.id, title: 'CSV import', text: 'Customers import a CSV.' });

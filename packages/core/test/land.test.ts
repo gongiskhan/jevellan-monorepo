@@ -20,6 +20,8 @@ const L = await import('../src/land.js');
 const E = await import('../src/evals.js');
 const H = await import('../src/handoff.js');
 const G = await import('../src/land-git.js');
+const T = await import('../src/tasks.js');
+const { TaskShowSchema } = await import('../src/contracts/task-show.js');
 const { RUNTIME_ROOT } = await import('../src/paths.js');
 const { JvError } = await import('../src/errors.js');
 const { loadProviders } = await import('../src/providers.js');
@@ -260,6 +262,12 @@ describe('the land route', () => {
     const checks = JSON.parse(landing!.checks_json) as Array<{ name: string; passed: boolean; tail: string }>;
     assert.deepEqual(checks.map((c) => [c.name, c.passed]), [['unit', true]]);
     assert.match(checks[0]!.tail, /checking/);
+    // jv task show --json gives the landing's checks with their outcome (M-069), within the contract.
+    const shown = T.taskView(store, store.requireTask(f.taskId));
+    TaskShowSchema.parse(JSON.parse(JSON.stringify(shown)));
+    const shownChecks = shown.landings[0]!.checks;
+    assert.deepEqual(shownChecks.map((c) => [c.name, c.command, c.passed, c.exitCode, c.timedOut]), [['unit', 'echo checking; test -f src/feature.js', true, 0, false]]);
+    assert.match(shownChecks[0]!.outcome, /^passed in \d+\.\d s$/);
 
     // One Jev call with the key, the landing question and the criteria of the policy's ## routes.
     assert.equal(seen.length, 1);
@@ -370,6 +378,7 @@ describe('the land route', () => {
     const checks = JSON.parse(landing!.checks_json) as Array<{ passed: boolean; exitCode: number; tail: string }>;
     assert.equal(checks[0]!.passed, false);
     assert.equal(checks[0]!.exitCode, 3);
+    assert.match(T.taskView(store, store.requireTask(f.taskId)).landings[0]!.checks[0]!.outcome, /^failed \(exit 3\) in \d+\.\d s$/);
     assert.equal(git(f.repo, 'rev-parse', 'main'), f.base, 'main did not move');
     assert.equal(wakes.length, 1);
     assert.match(wakes[0]!.line, /landing: check test failed \(exit 3\): 1 failing: customers page renders nothing\. Run: jv task show/);
@@ -728,5 +737,21 @@ describe('the landing state', () => {
       [{ name: 'test', command: 'npm test', timeoutMs: L.CHECK_TIMEOUT_MS }],
     );
     assert.deepEqual(L.landingChecks({ riskyPaths: [], checks: [] }, { testCommand: null, pushAfterLanding: false, retentionDays: 3 }), []);
+  });
+});
+
+describe('the landing checks of jv task show', () => {
+  test('a timeout, a check without an exit code and entries that are not check results', () => {
+    const view = T.landingChecksView(
+      JSON.stringify([
+        { name: 'slow', command: 'sleep 30', passed: false, exitCode: null, timedOut: true, durationMs: 300.4, tail: '' },
+        { name: 'killed', command: 'x', passed: false, exitCode: null, timedOut: false, durationMs: 1200, tail: '' },
+        { name: 'no verdict' },
+        'not an object',
+      ]),
+    );
+    assert.deepEqual(view.map((c) => c.outcome), ['timed out after 0.3 s', 'failed in 1.2 s']);
+    assert.deepEqual(T.landingChecksView('not json'), []);
+    assert.deepEqual(T.landingChecksView('{}'), []);
   });
 });

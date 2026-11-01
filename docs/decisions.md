@@ -582,3 +582,91 @@ window, outside that process group.
 says they are listening. A supervisor (or a test) that signals as soon as it reads that line stops the server cleanly,
 closing it and removing its pid file, instead of killing the process by the default action and leaving a stale pid
 file behind.
+
+## M-060 The web app's build and tests
+
+`packages/ui/web` (React 19, TypeScript, Vite 8) builds to `packages/ui/dist/web` through `build:web`, which
+typechecks with `tsconfig.web.json` (noEmit, Bundler resolution, DOM lib) and then runs `vite build`. The root
+`npm run build` is `tsc -b` and then `build:web`, so `npm ci && npm run build` leaves the app `jv ui` serves; the web
+app is not a `tsc -b` project reference. `test:web` builds and runs the Playwright checks in `packages/ui/test-web/`
+with `node --test` against `test-web/mock-server.mjs`, which serves the app under a CSP stricter than the real
+server's (no inline style attributes), so anything inline fails a check; a console error fails a check too. The ui
+package's `build` and `test` run both. Markdown loads with the app (a lazy chunk showed "Rendering..." on every page);
+the A2UI renderer is a lazy chunk loaded only by reports with a `ui` array.
+
+## M-061 zod 3 beside zod 4
+
+`@a2ui/react` 0.14.0 needs zod ^3.25.76 as a peer and as its own dependency, so `packages/ui` lists zod 3.25.76
+(brief section 2). npm installs it at `packages/ui/node_modules/zod` and nests copies under `@a2ui/react` and
+`@a2ui/web_core`; the root and every other package keep zod 4.6.7 (`npm ls zod`). The Vite config aliases every bare
+`zod` import of the web bundle to the ui copy. Server code under `packages/ui/server` imports no zod at all (it would
+get zod 3 there): it sees operations through the structural `UiOperation` type (M-044).
+
+## M-062 A2UI rendering with @a2ui 0.14.0
+
+One `MessageProcessor([basicCatalog])` per report, keyed by the report id and its messages, so a refetch never drops
+what the owner picked or typed; messages are fed one at a time, as they are. A refused message whose version is not
+"v0.9" shows "UI not rendered: unsupported version"; any other refusal shows "UI not rendered: <reason>"; the rest of
+the report renders either way. Surfaces render with `A2uiSurface` under "From the step". A Button action posts
+`{action}` to `POST /api/tasks/:id/ui-action`; the surface is then dimmed and inert with "Sent to the step at HH:MM".
+In read-only mode the surface is inert. The v0.9 basic catalog renders custom elements in light DOM and adopts each
+element's styles into the document; `a2ui-theme.css` maps the renderer's `--a2ui-*` properties and class names onto
+the app's tokens. The brief's `structural.css` is not imported: 0.14.0's export `@a2ui/react/styles/structural.css`
+names a file the package does not contain, and its `styles` entry holds the v0.8 renderer's `.a2ui-surface` rules,
+which the v0.9 surface never uses (findings). core's `contracts/a2ui.ts` keeps accepting `"1.0"` as the brief states.
+
+## M-063 The project page layout
+
+The project page is a size container with two columns (the coordinator chat and the work) from 760 px of page width,
+about 1100 px of window beside the 292 px sidebar; below that the columns are the tabs "Chat" and "Work". From 1100 px
+of page width the Work column grows. The chat follows its end on first load and afterwards only while the reader is
+near the end.
+
+## M-064 Land now and Leave it go through the answer route
+
+core's `answerTask` takes exactly "Land now" and "Leave it" for an open landing ask, so the landing block posts
+`POST /api/tasks/:id/answer` with `{answer: "Land now"}` or `{answer: "Leave it"}`: the same path as `jv task answer`,
+the MCP and the coordinator, and no landing logic in the UI.
+
+## M-065 Screenshot URLs
+
+A report screenshot uses the `url` the server gives. Otherwise the page builds `/evidence/<task>/<path under
+.jv-evidence>` for an image path that is relative under `.jv-evidence/` or absolute under the task's worktree, and
+nothing for anything else. The server applies D-064's checks again; the page never reads a path the server refuses.
+
+## M-066 The live stream and drafts
+
+One EventSource on `/api/events`. Each resource refetches on `change`, with one fetch in flight and at most one
+queued, and keeps the last answer on screen meanwhile. Drafts (the composer, forms, A2UI inputs) live in component
+state, never in fetched data, so a refetch never clears what the owner is typing.
+
+## M-067 Small UI choices
+
+localStorage keys `jv.sidebar.collapsed` and `jv.theme` (a per-browser convenience; the server keeps no UI state).
+Side gutters of 16 px at 760 px and below; Jevellan's desktop gutters above that. Times are local HH:MM, 24-hour, with
+the date when not today. Headings balance their lines and paragraphs avoid a one-word last line (`text-wrap`). The
+collapsed sidebar is hidden by visibility and width 0, not `display: none`, so its state survives a reload without a
+jump.
+
+## M-068 Override offers the providers.json menu
+
+The Override dialog's model, effort and provider come from `providers.json` (brief section 7): `GET /api/providers`
+returns, per enabled provider, its name, kind, label and models (id, label, efforts), and nothing else (never a key
+file, token file, home or URL). The task's own placements and Jev's effort options are listed first as the likely
+choices. The model stays a free-text field with these suggestions, since core's override validates it against the same
+file.
+
+## M-069 The landing block's checks
+
+`jv task show --json` gives each landing its `checks`: the landing's own record of the checks it ran (name or
+command, passed, outcome), from the landing row, so the task page shows "checks with their outcome" (brief section 7)
+without a second request. A landing that ran none has an empty list.
+
+## M-070 dompurify is raised by an override
+
+`@a2ui/markdown-it` 0.2.2 (under `@a2ui/react` 0.14.0) pins dompurify 3.4.11, which has critical XSS advisories (GHSA
+55q2-fjhq-7xh7, c2j3-45gr-mqc4, 6688-9rhm-gjv2, cg2g-xh64-v4q7, mrv2-3pqr-j5jr, c6gr-qvv4-5v3f), all fixed by 3.4.17.
+The root `package.json` has `overrides: {dompurify: "3.4.17"}` and the lock names 3.4.17: a patch release of the same
+package, no new dependency. The web checks (A2UI surfaces included) pass unchanged. The page's CSP (no inline scripts)
+already blocked the event-handler payloads; the override closes the rest. The nested zod 3 advisory has no fixed zod 3
+and is the owner's choice (status file, NEEDS-OWNER).

@@ -123,6 +123,17 @@ export const TaskShowSchema = z.strictObject({
       reason: z.string(),
       commit: z.string().min(1).nullable(),
       createdAt: IsoTimeSchema,
+      checks: z.array(
+        z.strictObject({
+          name: z.string().min(1),
+          command: z.string(),
+          passed: z.boolean(),
+          exitCode: z.number().int().nullable(),
+          timedOut: z.boolean(),
+          durationMs: z.number().int().nonnegative(),
+          outcome: z.string().min(1),
+        }),
+      ),
     }),
   ),
   workflowDecision: z.strictObject({ id: DecisionIdSchema, chosen: WorkflowChosenSchema }).optional(),

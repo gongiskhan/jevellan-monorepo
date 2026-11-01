@@ -204,7 +204,19 @@ export interface LandingView {
   reason: string;
   commit: string | null;
   createdAt: string;
-  checks?: Array<{ name?: string; command?: string; outcome?: string; passed?: boolean; ok?: boolean }>;
+  /** The checks the landing ran (M-069). */
+  checks: LandingCheck[];
+}
+
+export interface LandingCheck {
+  name: string;
+  command: string;
+  passed: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  /** "passed in 3.2 s", "failed (exit 1) in 3.2 s", "timed out after 120 s". */
+  outcome: string;
 }
 
 /** `jv task show --json`. */
@@ -465,4 +477,9 @@ export interface UiAction {
   context: Record<string, unknown>;
   userMessage?: string;
   [key: string]: unknown;
+}
+
+/** `GET /api/providers`: the providers.json menu of the Override dialog (M-068). */
+export interface ProvidersMenu {
+  providers: Array<{ name: string; kind: string; models: Array<{ id: string; label: string; efforts: string[] }> }>;
 }

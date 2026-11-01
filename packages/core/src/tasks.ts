@@ -581,8 +581,37 @@ export interface TaskView {
   endedAt: string | null;
   steps: StepView[];
   messages: Array<{ id: string; direction: string; text: string; createdAt: string; deliveredAt: string | null; session: string | null }>;
-  landings: Array<{ id: string; route: string; state: string; reason: string; commit: string | null; createdAt: string }>;
+  landings: Array<{ id: string; route: string; state: string; reason: string; commit: string | null; createdAt: string; checks: LandingCheckView[] }>;
   workflowDecision?: { id: string; chosen: unknown };
+}
+
+/** A check a landing ran, as `jv task show --json` gives it (M-069): what ran, whether it passed, and a line saying so. */
+export interface LandingCheckView {
+  name: string;
+  command: string;
+  passed: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  /** "passed in 3.2 s", "failed (exit 1) in 3.2 s", "timed out after 120 s". */
+  outcome: string;
+}
+
+/** The checks of a landing row's checks_json; entries that are not check results are left out. */
+export function landingChecksView(checksJson: string): LandingCheckView[] {
+  const raw = parse(checksJson);
+  if (!Array.isArray(raw)) return [];
+  const out: LandingCheckView[] = [];
+  for (const c of raw as Array<Record<string, unknown>>) {
+    if (c === null || typeof c !== 'object' || typeof c.name !== 'string' || typeof c.passed !== 'boolean') continue;
+    const durationMs = typeof c.durationMs === 'number' && Number.isFinite(c.durationMs) ? Math.max(0, Math.round(c.durationMs)) : 0;
+    const exitCode = typeof c.exitCode === 'number' ? c.exitCode : null;
+    const timedOut = c.timedOut === true;
+    const secs = `${(durationMs / 1000).toFixed(1)} s`;
+    const outcome = timedOut ? `timed out after ${secs}` : c.passed ? `passed in ${secs}` : `failed${exitCode !== null ? ` (exit ${exitCode})` : ''} in ${secs}`;
+    out.push({ name: c.name, command: typeof c.command === 'string' ? c.command : '', passed: c.passed, exitCode, timedOut, durationMs, outcome });
+  }
+  return out;
 }
 
 function parse(text: string | null): unknown {
@@ -676,6 +705,7 @@ export function taskView(store: Store, task: TaskRow): TaskView {
       reason: l.reason,
       commit: l.commit_sha,
       createdAt: l.created_at,
+      checks: landingChecksView(l.checks_json),
     })),
     ...(workflowDecision ? { workflowDecision: { id: workflowDecision.id, chosen: parse(workflowDecision.chosen_json) } } : {}),
   };
