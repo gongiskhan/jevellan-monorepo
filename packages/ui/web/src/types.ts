@@ -462,6 +462,8 @@ export interface WorkflowFile {
   kind: string;
   source: string;
   file: string;
+  /** The path as the owner reads it (~ for the home folder). */
+  shown?: string;
   steps: Array<{ duty: string; when?: string } | string>;
 }
 

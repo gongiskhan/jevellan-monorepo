@@ -335,7 +335,11 @@ dialog.wide-dialog { width: min(1200px, calc(100vw - 24px)); }
   .page-content, .page-content:not(:has(> .conversation-page)) { padding: 14px 16px max(32px, env(safe-area-inset-bottom)); }
   .app-header { padding: 0 16px 0 12px; }
   .composer, .composer.card { margin-inline: -16px; padding-inline: 16px; }
-  .task-actions button { padding: 5px 10px; }
+  /* One row that scrolls sideways: a wrapped sticky bar took three rows of a phone screen. */
+  .task-actions { flex-wrap: nowrap; overflow-x: auto; margin-inline: -16px; padding-inline: 16px; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent); }
+  .task-actions::-webkit-scrollbar { display: none; }
+  .task-actions button { flex: none; padding: 5px 10px; }
+  .task-actions .error-text { flex: none; white-space: nowrap; }
   .step-item { grid-template-columns: 24px minmax(0, 1fr); gap: 0 10px; }
   .step-marker { width: 24px; height: 24px; font-size: 11px; }
   .step-item::before { left: 11px; top: 24px; }

@@ -343,6 +343,8 @@ test('workflows: the file each kind uses (project override or default) and its s
   assert.deepEqual(Object.keys(byKind), ['feature', 'bug', 'automation']);
   assert.equal(byKind.feature.source, 'default');
   assert.equal(byKind.feature.file, join(feature, 'workflow.json'));
+  // A file outside the owner's home folder is shown as it is (one under it starts with ~).
+  assert.equal(byKind.feature.shown, byKind.feature.file);
   assert.deepEqual(byKind.feature.steps.map((s: any) => s.duty), ['plan', 'implement']);
   assert.equal(byKind.bug.source, 'project');
   assert.equal(byKind.bug.file, join(own, 'bug.json'));

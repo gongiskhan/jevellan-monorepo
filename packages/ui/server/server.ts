@@ -32,6 +32,7 @@ import { notFound, refused } from 'jevellan-core/errors';
 import { readNotes } from 'jevellan-core/handoff';
 import { normalizeId } from 'jevellan-core/ids';
 import { writeNotes } from 'jevellan-core/notes';
+import { ownerHome } from 'jevellan-core/env';
 import { paths } from 'jevellan-core/paths';
 import { loadProviders } from 'jevellan-core/providers';
 import { openStore, type Store } from 'jevellan-core/store';
@@ -232,7 +233,11 @@ export function projectWorkflows(project: string): Array<Record<string, unknown>
     if (kind === 'single') continue;
     const override = paths.projectWorkflow(project, kind);
     const own = existsSync(override);
-    const entry: Record<string, unknown> = { kind, source: own ? 'project' : 'default', file: own ? override : defaultWorkflowFile(kind) };
+    const file = own ? override : defaultWorkflowFile(kind);
+    // `shown` is the path as the owner reads it, ~ for the home folder; `file` stays absolute.
+    const home = ownerHome();
+    const shown = file.startsWith(`${home}/`) ? `~${file.slice(home.length)}` : file;
+    const entry: Record<string, unknown> = { kind, source: own ? 'project' : 'default', file, shown };
     try {
       entry.steps = resolveWorkflow({ project, kind }).workflow.steps;
     } catch (error) {

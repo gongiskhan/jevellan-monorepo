@@ -13,7 +13,7 @@
 // write), the workflow files in use, and Memory, Schedules and Goals chips with counts linking to their pages. New task
 // creates a task from the UI (POST /api/tasks, origin ui) and opens it.
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   createTask,
   getGoals,
@@ -223,7 +223,7 @@ function Workflows({ project }: { project: string }) {
               <span className="chip dim">{w.source}</span>
             </div>
             <span className="workflow-file" title={w.file}>
-              {w.file}
+              {breakAtSlashes(w.shown ?? w.file)}
             </span>
             <span className="workflow-steps">{w.steps.map((s) => (typeof s === 'string' ? s : s.duty)).join(' > ')}</span>
           </li>
@@ -436,4 +436,18 @@ export function ProjectPage({ name }: { name: string }) {
       {creating && <NewTask project={name} close={() => setCreating(false)} />}
     </div>
   );
+}
+
+/** A path that wraps at its slashes rather than inside a folder name. */
+function breakAtSlashes(path: string): ReactNode {
+  return path.split('/').map((part, index, all) => (
+    <Fragment key={index}>
+      {part}
+      {index < all.length - 1 && (
+        <>
+          /<wbr />
+        </>
+      )}
+    </Fragment>
+  ));
 }
