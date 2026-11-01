@@ -28,10 +28,27 @@
     "viewer"
   ],
   "scripts": {
-    "build": "tsc -b",
-    "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\""
+    "build": "tsc -b && npm run build:web",
+    "build:web": "tsc -p tsconfig.web.json && vite build",
+    "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --disable-warning=ExperimentalWarning --test \"dist-test/test/**/*.test.js\" && npm run test:web",
+    "test:web": "npm run build:web && node --test --test-concurrency=1 \"test-web/*.test.mjs\""
   },
   "dependencies": {
-    "jevellan-core": "0.1.0"
+    "@a2ui/react": "0.14.0",
+    "@a2ui/web_core": "0.14.0",
+    "jevellan-core": "0.1.0",
+    "jevellan-scheduler": "0.1.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "playwright": "1.64.1",
+    "vite": "8.3.5"
   }
 }

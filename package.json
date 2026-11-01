@@ -24,7 +24,7 @@
     "packages/cli"
   ],
   "scripts": {
-    "build": "tsc -b --pretty false",
+    "build": "tsc -b --pretty false && npm run build:web -w jevellan-ui",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && npm test --workspaces --if-present && node --test \"scripts/test/*.test.mjs\"",
     "lint": "eslint .",

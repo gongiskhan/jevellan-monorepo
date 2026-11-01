@@ -31,7 +31,6 @@
     "jevellan-improver": "0.1.0",
     "jevellan-memory": "0.1.0",
     "jevellan-planner": "0.1.0",
-    "jevellan-scheduler": "0.1.0",
-    "zod": "4.6.7"
+    "jevellan-scheduler": "0.1.0"
   }
 }
