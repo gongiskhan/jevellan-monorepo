@@ -2,7 +2,8 @@
 // .jv-evidence/ folder (task worktrees under ~/.jv/worktrees and the sandbox checkouts) and acceptance/ for the
 // contents of every file in ~/.jv/secrets/ and for the two token variable names of the brief (the Anthropic auth
 // token, and the Claude Code OAuth token followed by '='); nothing matches.
-// Then `npm run scan:secrets` on the repository (with --values-from ~/.jv/secrets, M-032) passes. Patterns go to grep
+// Then `npm run scan:secrets` on the repository (with --values-from ~/.jv/secrets, M-032, and --values-from
+// ~/.jv/ui-password once that file exists, M-044) passes. Patterns go to grep
 // on stdin and only file names come back (lib.mjs leakCheck): no secret is ever printed.
 //
 // Usage: node acceptance/m16-no-leaks.mjs
@@ -43,8 +44,11 @@ async function main() {
     };
   });
 
-  await check('npm run scan:secrets passes on the repository (with the values of ~/.jv/secrets)', () => {
-    const r = run(NODE, [join(CHECKOUT, 'scripts', 'secret-scan.mjs'), '--values-from', join(REAL_JV_HOME, 'secrets')], { cwd: CHECKOUT, timeoutMs: 300_000 });
+  await check('npm run scan:secrets passes on the repository (with the values of ~/.jv/secrets and the UI password)', () => {
+    // The UI password lives next to the store, not in secrets/ (M-044): the scan reads that file too once it exists.
+    const uiPassword = join(REAL_JV_HOME, 'ui-password');
+    const values = ['--values-from', join(REAL_JV_HOME, 'secrets'), ...(existsSync(uiPassword) ? ['--values-from', uiPassword] : [])];
+    const r = run(NODE, [join(CHECKOUT, 'scripts', 'secret-scan.mjs'), ...values], { cwd: CHECKOUT, timeoutMs: 300_000 });
     return { ok: r.code === 0, detail: (r.stdout || r.stderr).trim().split('\n').slice(-2).join(' / ') };
   });
 

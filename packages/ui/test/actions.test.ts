@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { makeHome, seedTask } from './fixtures/run-fixture.js';
+import { FAKE_TOKEN, makeHome, seedTask } from './fixtures/run-fixture.js';
 import { Client } from './fixtures/server-fixture.js';
 
 const home = makeHome('jv-ui-actions-test-');
@@ -143,6 +143,23 @@ test('a context longer than 4000 characters is cut in the text; meta_json keeps 
   assert.equal(text.length, 'UI action submit: '.length + UI_ACTION_CONTEXT_MAX);
   assert.ok(text.endsWith('...'));
   assert.deepEqual(JSON.parse(store.getMessage(d.message.id)!.meta_json!), action);
+});
+
+test('known secrets in an action are masked in the stored text and meta_json, also across the 4000-character cut', async () => {
+  const taskId = runningTask();
+  const action = { name: 'submit', context: { notes: `${'x'.repeat(4000 - 30)}${FAKE_TOKEN} more`, token: FAKE_TOKEN } };
+  const d = (await client.post(`/api/tasks/${taskId}/ui-action`, { action })).json();
+  // The response passes the UI's second redaction pass, so the stored row is what is checked.
+  const row = store.getMessage(d.message.id)!;
+  assert.ok(!row.text.includes(FAKE_TOKEN.slice(0, 12)), 'the message text keeps part of the secret');
+  assert.ok(!row.meta_json!.includes(FAKE_TOKEN));
+  assert.deepEqual(JSON.parse(row.meta_json!), { name: 'submit', context: { notes: `${'x'.repeat(4000 - 30)}[redacted] more`, token: '[redacted]' } });
+  const { taskId: waiting } = waitingTask();
+  const answer = { name: 'answer', context: { label: `Blue ${FAKE_TOKEN}` } };
+  const a = (await client.post(`/api/tasks/${waiting}/ui-action`, { action: answer })).json();
+  const arow = store.getMessage(a.message.id)!;
+  assert.equal(arow.text, 'Blue [redacted]');
+  assert.ok(!arow.meta_json!.includes(FAKE_TOKEN));
 });
 
 test('refusals: no action, no name, a context that is not an object, a done task, an unknown task', async () => {

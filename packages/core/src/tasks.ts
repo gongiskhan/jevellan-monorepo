@@ -36,6 +36,11 @@
 //
 // JSON shared by the command and the control MCP (brief section 5: a tool's structured content equals `jv ...
 // --json`): createdTaskView() is what jv task create prints, taskView() what jv task show prints.
+//
+// Caller text (a task's title and text, a message, an answer) is masked for known secrets (redact.ts) on the way in,
+// before anything is stored, derived (the request id, the branch name, task.md) or typed into a pane, as the
+// coordinator's owner messages are (M-030). The redactor masks only the values of jv's secret files, so text that
+// holds none reaches the step exactly as written.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -74,6 +79,7 @@ import {
   type ProviderAuthRecord,
   type ProvidersConfig,
 } from './providers.js';
+import { redact } from './redact.js';
 import { reportView, type ReportView } from './report.js';
 import { ATTACHED_REASON, importTakeover } from './takeover.js';
 import {
@@ -406,8 +412,9 @@ export async function admitTask(store: Store, taskId: string, options: { reason:
 export async function createTask(store: Store, input: CreateTaskInput, deps: Partial<TaskDeps> = {}): Promise<CreateTaskResult> {
   const d = withDefaults(deps);
   const project = store.requireProject(input.project);
-  const title = input.title.replace(/\s+/g, ' ').trim();
-  const text = normalizeText(input.text);
+  // Masked before it is normalized, stored or hashed into the request id (see the header).
+  const title = redact(input.title).replace(/\s+/g, ' ').trim();
+  const text = normalizeText(redact(input.text));
   if (title === '') throw refused('--title is required');
   if (text.trim() === '') throw refused('the task text is empty (--text "..." or --file F)');
   const parent = input.parent ? requireTaskId(store, input.parent) : undefined;
@@ -791,13 +798,15 @@ export async function messageTask(
 ): Promise<MessageResult> {
   const d = withDefaults(options.deps);
   const task = requireTaskId(store, id);
-  if (text.trim() === '') throw refused('the message is empty');
+  // Masked before it is stored, typed or put in a prompt (see the header).
+  const clean = redact(text).trim();
+  if (clean === '') throw refused('the message is empty');
   if (task.state === 'done' || task.state === 'stopped') throw refused(`task ${task.id} is ${task.state}; it takes no messages`);
   const direction: MessageDirection = callerIsCoordinator(store, options.env) ? 'coordinator' : 'owner';
   markLost(store);
   const live = liveRuns(store, task.id).at(-1);
   if (!live && !currentStep(store, task.id)) throw refused(noStepLeft(task));
-  const message = store.createMessage({ task_id: task.id, direction, text: text.trim() });
+  const message = store.createMessage({ task_id: task.id, direction, text: clean });
   if (live) {
     if (live.runtime === 'claude-tmux' && live.tmux_target && live.state === 'running') {
       const typed = await d.typeIntoLive(store, live, resumeMessage(direction, message.text));
@@ -844,7 +853,8 @@ export async function answerTask(
 ): Promise<AnswerResult> {
   const d = withDefaults(options.deps);
   const task = requireTaskId(store, id);
-  const given = text.trim();
+  // Masked before it is matched, stored or sent to the step (see the header).
+  const given = redact(text).trim();
   if (given === '') throw refused('the answer is empty');
   if (task.state !== 'waiting-owner') throw refused(`task ${task.id} is ${task.state}, not waiting on an answer; use jv task message to tell it something`);
 

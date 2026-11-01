@@ -13,7 +13,9 @@
 // - the setup command (project.json setupCommand, default "npm ci" when package-lock.json exists) runs once per
 //   worktree inside the first run of the task, before the runtime starts: runWorktreeSetup().
 //
-// Every git call runs without a shell, with GIT_TERMINAL_PROMPT=0, and its output is never logged unredacted.
+// Every git call runs without a shell, with GIT_TERMINAL_PROMPT=0, and its output is never logged unredacted. The setup
+// command's stdout and stderr are each masked as one stream (redact.redactingWriter), not chunk by chunk, so a value
+// split between two chunks of the pipe is masked whole.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
@@ -21,7 +23,7 @@ import { dirname, join, resolve } from 'node:path';
 import { conflict, refused } from './errors.js';
 import { recordEvent } from './events.js';
 import { paths, realpathAsFarAsExists } from './paths.js';
-import { redact } from './redact.js';
+import { redact, redactingWriter } from './redact.js';
 import type { Store } from './store.js';
 import type { SessionRow } from './types.js';
 
@@ -272,6 +274,16 @@ export async function runWorktreeSetup(store: Store, session: SessionRow, option
   appendFileSync(logFile, `${at} worktree setup: ${command} (in ${task.worktree_path})\n`);
   const started = Date.now();
   const timeoutMs = options.timeoutMs ?? SETUP_TIMEOUT_MS;
+  const appendLog = (text: string) => {
+    try {
+      appendFileSync(logFile, text);
+    } catch {
+      // the log is best effort
+    }
+  };
+  // Each pipe is masked as one stream, so a value split between two chunks is still masked whole.
+  const stdoutLog = redactingWriter(appendLog);
+  const stderrLog = redactingWriter(appendLog);
   const { code, timedOut } = await new Promise<{ code: number | null; timedOut: boolean }>((resolvePromise) => {
     const child = spawn('sh', ['-c', command], {
       cwd: task.worktree_path!,
@@ -280,15 +292,8 @@ export async function runWorktreeSetup(store: Store, session: SessionRow, option
       detached: true,
     });
     let timedOutFlag = false;
-    const write = (chunk: Buffer) => {
-      try {
-        appendFileSync(logFile, redact(chunk.toString('utf8')));
-      } catch {
-        // the log is best effort
-      }
-    };
-    child.stdout?.on('data', write);
-    child.stderr?.on('data', write);
+    child.stdout?.setEncoding('utf8').on('data', (text: string) => stdoutLog.write(text));
+    child.stderr?.setEncoding('utf8').on('data', (text: string) => stderrLog.write(text));
     const kill = () => {
       try {
         if (child.pid) process.kill(-child.pid, 'SIGKILL');
@@ -310,6 +315,8 @@ export async function runWorktreeSetup(store: Store, session: SessionRow, option
       resolvePromise({ code: c, timedOut: timedOutFlag });
     });
   });
+  stdoutLog.end();
+  stderrLog.end();
   const durationMs = Date.now() - started;
   const ok = code === 0 && !timedOut;
   const rec: SetupRecord = { status: ok ? 'ok' : 'failed', command, exitCode: code, durationMs, session: session.id, at: new Date().toISOString() };

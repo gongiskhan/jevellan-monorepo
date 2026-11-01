@@ -138,6 +138,17 @@ test('no block: done is synthesized with the whole answer trimmed to 4000 charac
   assert.match(store.getReportBySession(s3.id)!.limitations ?? '', /not a valid report/);
 });
 
+test('a synthesized summary masks a secret that crosses its 4000-character cut', async () => {
+  const { Redactor } = await import('../src/redact.js');
+  const secret = `fake-long-secret-${'L1k2J3h4'.repeat(10)}`;
+  const s = newRun('claude-main', 'model-small');
+  llm.recordAnswerReport(store, s.id, `${'x'.repeat(4000 - 50)}${secret} and the rest of the answer`, new Redactor([secret]));
+  const report = store.getReportBySession(s.id)!;
+  assert.ok(!report.summary.includes(secret.slice(0, 20)), 'the summary keeps part of the secret');
+  assert.ok(report.summary.endsWith('[redacted] and the rest of the answer'));
+  assert.ok(!store.listEvents(s.id).some((e) => e.payload.includes(secret.slice(0, 20))));
+});
+
 test('openai-compatible: chat/completions with the key, history from message events, effort fallback, usage, local row', async () => {
   const s = newRun('deepseek', 'chat-model', undefined, 'high');
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = [];

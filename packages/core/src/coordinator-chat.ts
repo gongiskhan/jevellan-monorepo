@@ -9,10 +9,10 @@
 //   <provider home>/.claude/projects/<cwd slug>/<native id>.jsonl (the home providers.json gives the session's
 //   provider, else ~/.jv/homes/<provider>) from the byte offset in meta coordinator_tail:<session id>, and records on
 //   the session row, through recordEvent (redaction, trimming), in transcript order and at the transcript's
-//   timestamps: assistant `text`, `tool-call` and `tool-result` (inputs and outputs trimmed to 4000 characters, as the
-//   claude-tmux runtime does), one `usage` event per read with the tokens of API calls not counted before, and
-//   `message` events for the user entries Claude Code recorded (below). Thinking is not recorded: the chat shows what
-//   the coordinator says and does, and the brief names these four kinds.
+//   timestamps: assistant `text`, `tool-call` and `tool-result` (inputs and outputs masked, then trimmed to 4000
+//   characters, as the claude-tmux runtime does), one `usage` event per read with the tokens of API calls not counted
+//   before, and `message` events for the user entries Claude Code recorded (below). Thinking is not recorded: the
+//   chat shows what the coordinator says and does, and the brief names these four kinds.
 // - Complete lines only: an incomplete last line is left for the next call. A chunk's events and its new offset are
 //   written in one transaction that first checks the stored offset is still the one the chunk was read from, so the
 //   bot and the UI server tailing at once never record a line twice (the later one reads on from the new offset).
@@ -78,7 +78,7 @@ import { EVENT_TEXT_MAX, recordEvent } from './events.js';
 import { isAlive } from './launcher.js';
 import { paths } from './paths.js';
 import { findProvider, loadProviders, type ProvidersConfig } from './providers.js';
-import { redact } from './redact.js';
+import { defaultRedactor, redact } from './redact.js';
 import type { Store } from './store.js';
 import {
   fileSize,
@@ -414,7 +414,7 @@ function recordChunk(
         emit('message', { from: line.from, role: 'user', text: line.text, source: 'transcript' }, at);
       }
     }
-    for (const e of transcriptEvents(turnsFromRecords([record], 'claude'))) {
+    for (const e of transcriptEvents(turnsFromRecords([record], 'claude'), defaultRedactor())) {
       if (e.kind === 'thinking') continue;
       if (e.kind === 'tool-call') callNames.set(e.payload.id, e.payload.name);
       const payload: Record<string, unknown> = { ...e.payload };

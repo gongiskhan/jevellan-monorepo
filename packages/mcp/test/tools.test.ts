@@ -11,7 +11,7 @@ import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
-import { buildFixture, cliJson, fakeTaskDeps, loadCli, makeHome, readText } from './fixtures/home.js';
+import { buildFixture, cliJson, FAKE_TOKEN, fakeTaskDeps, loadCli, makeHome, readText } from './fixtures/home.js';
 
 const coreRoot = dirname(createRequire(import.meta.url).resolve('jevellan-core/package.json'));
 const home = makeHome('jv-mcp-tools-test-', coreRoot);
@@ -482,4 +482,23 @@ test('the call log: one line per call with the tool, ids, duration and exit code
     assert.ok(!text.includes(secret), `the log does not hold "${secret}"`);
   }
   assert.equal(statSync(mcpLogFile()).mode & 0o777, 0o600);
+});
+
+test('known secrets: jv_memory_add stores the masked text; every tool result and resource is masked again on the way out', async () => {
+  const memory = await import('jevellan-memory');
+  const added = await data('jv_memory_add', { kind: 'environment', text: `The deploy token is ${FAKE_TOKEN} for staging`, scope: 'global' });
+  const id = added.id as string;
+  const row = store.db.prepare('SELECT text FROM memories WHERE id = ?').get(id) as { text: string };
+  assert.equal(row.text, 'The deploy token is [redacted] for staging');
+  // A row written before the fix (or before the secret file existed) still holds the value: the result pass masks it.
+  const raw = memory.remember(store.db, { scope: memory.GLOBAL_SCOPE, kind: 'fact', text: `Legacy row with ${FAKE_TOKEN} inside`, tags: [], source: 'owner' });
+  const found = await call('jv_memory_search', { query: 'Legacy row' });
+  assert.ok(!found.isError);
+  assert.ok(JSON.stringify(found.structuredContent).includes(raw.id));
+  assert.ok(!JSON.stringify(found.structuredContent).includes(FAKE_TOKEN), 'structured content holds the secret');
+  assert.ok(!found.content.map((c) => c.text ?? '').join('\n').includes(FAKE_TOKEN), 'the text holds the secret');
+  const t = store.createTask({ project_id: fx.projectId, request_id: 'raw-secret-task', kind: 'single', title: `Raw ${FAKE_TOKEN}`, task_text: 'x', workflow_json: '{"steps":[]}' }).row;
+  const r = await client.readResource({ uri: `jv://tasks/${t.id}` });
+  const text = String((r.contents[0] as { text: string }).text);
+  assert.ok(text.includes(t.id) && !text.includes(FAKE_TOKEN), 'the resource holds the secret');
 });

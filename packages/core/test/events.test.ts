@@ -65,6 +65,42 @@ test('secrets are redacted before the cut, so a secret across the boundary never
   assert.match(row.payload, /\[redacted\]/);
 });
 
+// A made-up value of 97 characters, built at run time, that the redactor knows.
+const LONG_SECRET = `fake-long-secret-${'Q1w2E3r4'.repeat(10)}`;
+
+test('a tool text cut at 4000 characters keeps no part of a secret that crosses the cut (transcriptEvents, then recordEvent)', async () => {
+  const { transcriptEvents, TOOL_TEXT_MAX } = await import('../src/transcript.js');
+  const { Redactor } = await import('../src/redact.js');
+  const redactor = new Redactor([LONG_SECRET]);
+  const s = newRun();
+  for (const start of [TOOL_TEXT_MAX - 50, TOOL_TEXT_MAX - 90, TOOL_TEXT_MAX - 10]) {
+    const text = `${'z'.repeat(start)}${LONG_SECRET} and more after it ${'w'.repeat(200)}`;
+    const turns = [
+      { id: `t${start}`, role: 'assistant' as const, blocks: [{ type: 'tool' as const, id: `tu${start}`, name: 'Write', input: text, output: text, state: 'completed' as const }] },
+    ];
+    const events = transcriptEvents(turns, redactor);
+    assert.deepEqual(events.map((e) => e.kind), ['tool-call', 'tool-result']);
+    for (const e of events) {
+      const row = recordEvent(store, s.id, e.kind, e.payload, { redactor });
+      assert.ok(!row.payload.includes(LONG_SECRET.slice(0, 20)), `${e.kind} at ${start} keeps part of the secret`);
+      assert.match(row.payload, /\[redacted\]/);
+    }
+  }
+});
+
+test('redactedTrim masks first and cuts after, flagging the cut on the masked text', async () => {
+  const { redactedTrim } = await import('../src/events.js');
+  const { Redactor } = await import('../src/redact.js');
+  const redactor = new Redactor([LONG_SECRET]);
+  const cut = redactedTrim(redactor, `${'a'.repeat(30)}${LONG_SECRET}`, 40);
+  assert.equal(cut.text, `${'a'.repeat(30)}[redacted]`);
+  assert.equal(cut.truncated, false, 'the masked text fits');
+  const long = redactedTrim(redactor, `${'a'.repeat(35)}${LONG_SECRET}bbbb`, 40);
+  assert.equal(long.text, `${'a'.repeat(35)}[reda`);
+  assert.equal(long.truncated, true);
+  assert.deepEqual(redactedTrim(redactor, 'nothing secret here', 40), { text: 'nothing secret here', truncated: false });
+});
+
 test('usage events add to the session counters', () => {
   const s = newRun();
   recordEvent(store, s.id, 'usage', { inputTokens: 100, outputTokens: 20, cacheReadTokens: 1000, cacheWriteTokens: 50, costUsd: 0.25 });

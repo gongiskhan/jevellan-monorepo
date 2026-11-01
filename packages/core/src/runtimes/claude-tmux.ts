@@ -569,7 +569,7 @@ export function createClaudeTmuxRuntime(deps: ClaudeTmuxDeps = {}): RuntimeModul
         lastGrowth = now;
         tracker.feed(records, now);
         usage.feed(records);
-        for (const e of transcriptEvents(turnsFromRecords(records, 'claude'))) emit(e.kind, e.payload);
+        for (const e of transcriptEvents(turnsFromRecords(records, 'claude'), redactor)) emit(e.kind, e.payload);
       } else offset = chunk.next;
 
       const report = store.getReportBySession(session.id);

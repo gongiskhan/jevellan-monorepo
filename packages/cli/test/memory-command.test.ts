@@ -7,7 +7,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { makeHome, seedTask } from './fixtures/run-fixture.js';
+import { FAKE_TOKEN, makeHome, seedTask } from './fixtures/run-fixture.js';
 
 const home = makeHome('jv-memory-command-test-');
 process.env.JV_HOME = home;
@@ -63,6 +63,16 @@ describe('jv memory', () => {
     const list = json<{ memories: Array<{ id: string }> }>('memory', 'list', '--project', 'sandbox');
     assert.deepEqual(list.memories.map((m) => m.id), [id]);
     assert.match(jv('memory', 'export', '--project', 'sandbox').stdout, /^# Memory: project:sandbox\n\n## Environment\n/);
+  });
+
+  test('add masks a known secret before the memory is stored or printed', () => {
+    const r = jv('memory', 'add', '--scope', 'global', '--kind', 'environment', `The staging key is ${FAKE_TOKEN} for now`, '--json');
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(!r.stdout.includes(FAKE_TOKEN));
+    const out = JSON.parse(r.stdout) as { id: string; memory: { text: string } };
+    assert.equal(out.memory.text, 'The staging key is [redacted] for now');
+    const row = store.db.prepare('SELECT text FROM memories WHERE id = ?').get(out.id) as { text: string };
+    assert.equal(row.text, 'The staging key is [redacted] for now');
   });
 
   test('archive needs a reason, hides the memory, and keeps it listable as archived', () => {

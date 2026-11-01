@@ -119,3 +119,37 @@ test('OAuth logins in provider homes and archived login copies are masked, value
   // Short fields (plan names, scopes) are left alone.
   assert.equal(redact('max user:inference short'), 'max user:inference short');
 });
+
+test('redactingWriter masks a value split across writes, holds back no more than the longest value, and flushes at end', async () => {
+  const { redactingWriter } = await import('../src/redact.js');
+  const long = `fake-stream-secret-${'R2d2C3p0'.repeat(6)}`;
+  const short = 'fake-short-key-77';
+  const r = new Redactor([long, short]);
+  assert.equal(r.longest, long.length);
+  assert.equal(new Redactor().longest, 0);
+  const out: string[] = [];
+  const w = redactingWriter((t) => out.push(t), r);
+  const text = `line one\nthe key ${long} and ${short} done\n${'x'.repeat(200)}\nlast ${short.slice(0, 5)}`;
+  // Every split point, in pieces of 7 characters: no piece boundary leaves a part of a value unmasked.
+  for (let i = 0; i < text.length; i += 7) w.write(text.slice(i, i + 7));
+  const before = out.join('');
+  w.end();
+  const all = out.join('');
+  assert.equal(all, `line one\nthe key ${REDACTED} and ${REDACTED} done\n${'x'.repeat(200)}\nlast ${short.slice(0, 5)}`);
+  assert.ok(all.startsWith(before) && all.length - before.length <= r.longest - 1, 'holds back at most the longest value less one');
+  assert.ok(!all.includes(long.slice(0, 12)) && !all.includes(long.slice(-12)));
+  // No value known: everything passes straight through.
+  const plain: string[] = [];
+  const p = redactingWriter((t) => plain.push(t), new Redactor());
+  p.write('abc');
+  assert.deepEqual(plain, ['abc']);
+  p.end();
+  assert.deepEqual(plain, ['abc']);
+  // A surrogate pair is never split between two writes.
+  const pairs: string[] = [];
+  const q = redactingWriter((t) => pairs.push(t), new Redactor(['fake-k']));
+  q.write('abc\u{1D11E}efgh');
+  q.end();
+  for (const piece of pairs) assert.doesNotMatch(piece, /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
+  assert.equal(pairs.join(''), 'abc\u{1D11E}efgh');
+});

@@ -155,3 +155,33 @@ test('runWorktreeSetup runs once per worktree, logs the output and records one e
     store.close();
   }
 });
+
+test('runWorktreeSetup masks a secret the command prints in two pieces, on stdout and on stderr', async () => {
+  const secret = `fake-setup-secret-${'K4j5H6g7'.repeat(8)}`;
+  mkdirSync(join(home, 'secrets'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, 'secrets', 'setup.token'), `${secret}\n`, { mode: 0o600 });
+  const store = openStore();
+  try {
+    const repo = join(home, 'repo-split');
+    makeRepo(repo);
+    const project = store.createProject({ name: 'split', path: repo, default_branch: 'main' }).row;
+    const wt = join(home, 'worktrees', 'split', 'task-aaaaaa');
+    G.createWorktree({ repo, path: wt, branch: 'jv/task-aaaaaa', base: 'main' });
+    const task = store.createTask({ project_id: project.id, request_id: 'rsplit', kind: 'single', title: 'T', task_text: 'x', workflow_json: '{}' }).row;
+    store.updateTask(task.id, { worktree_path: wt, branch: 'jv/task-aaaaaa' });
+    const step = store.createStep({ task_id: task.id, ordinal: 1, duty: 'implement' }).row;
+    const s = store.createSession({ project_id: project.id, task_id: task.id, step_id: step.id, request_id: 'ssplit', kind: 'step', runtime: 'claude-sdk', provider: 'p', model: 'm', effort: 'high', cwd: wt }).row;
+    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, HEAD_PART: secret.slice(0, 30), TAIL_PART: secret.slice(30) };
+    // Each half is written on its own, a pause apart, so they reach jv as separate chunks of the pipe.
+    const command = 'printf "token: %s" "$HEAD_PART"; sleep 0.3; printf "%s end\\n" "$TAIL_PART"; printf "err: %s" "$HEAD_PART" >&2; sleep 0.3; printf "%s\\n" "$TAIL_PART" >&2';
+    const rec = await G.runWorktreeSetup(store, s, { env, command });
+    assert.equal(rec?.status, 'ok');
+    const log = readFileSync(paths.sessionLog(s.id), 'utf8');
+    assert.ok(!log.includes(secret.slice(0, 20)), 'the log keeps the first half of the secret');
+    assert.ok(!log.includes(secret.slice(30, 50)), 'the log keeps the second half of the secret');
+    assert.match(log, /token: \[redacted\] end\n/);
+    assert.match(log, /err: \[redacted\]\n/);
+  } finally {
+    store.close();
+  }
+});

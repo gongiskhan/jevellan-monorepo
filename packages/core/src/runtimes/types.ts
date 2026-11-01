@@ -17,7 +17,11 @@ export interface ToolPolicy {
   writeFiles?: string[];
 }
 
-/** One MCP server for a worker: stdio, or http/sse as project.json lists it. */
+/**
+ * One MCP server for a worker: stdio, or http/sse as project.json lists it. `env` and `headers` may hold secrets read
+ * from ~/.jv/secrets (run.ts projectMcpServers): a runtime passes them through the worker's environment or a mode 600
+ * file, never on a command line.
+ */
 export type McpServerSpec =
   | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
   | { type: 'http' | 'sse'; url: string; headers?: Record<string, string> };

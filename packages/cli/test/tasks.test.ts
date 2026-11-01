@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
-import { makeHome, writeSkill } from './fixtures/run-fixture.js';
+import { FAKE_TOKEN, makeHome, writeSkill } from './fixtures/run-fixture.js';
 
 const home = makeHome('jv-tasks-test-');
 process.env.JV_HOME = home;
@@ -555,4 +555,44 @@ test('resume after a claude-sdk takeover imports what the owner did in the trans
   // An import happens once.
   assert.ok(readTakeover(store, run.id)!.importedAt);
   assert.equal(importTakeover(store, store.requireSession(run.id), { home: providerHome, windowOpen: false }).events, 0);
+});
+
+test('caller text is masked for known secrets before it is stored or typed; text with no secret is kept as written', async () => {
+  // create: the title, the task text, task.md and the request id all come from the masked text.
+  const nth = ++k;
+  const title = `Rotate the key ${FAKE_TOKEN} today ${nth}`;
+  const text = `Call the API with ${FAKE_TOKEN} as the bearer.\n`;
+  const r = await T.createTask(store, input({ kind: 'single', duty: 'implement', title, text }), deps);
+  assert.equal(r.task.title, `Rotate the key [redacted] today ${nth}`);
+  assert.equal(r.task.task_text, 'Call the API with [redacted] as the bearer.');
+  assert.equal(readFileSync(paths.taskFile('sandbox', r.task.id), 'utf8'), 'Call the API with [redacted] as the bearer.\n');
+  const again = await T.createTask(store, input({ kind: 'single', duty: 'implement', title, text }), deps);
+  assert.equal(again.task.id, r.task.id, 'the same command is the same task');
+  const row = store.db.prepare('SELECT title, task_text, request_id FROM tasks WHERE id = ?').get(r.task.id) as Record<string, string>;
+  assert.ok(!JSON.stringify(row).includes(FAKE_TOKEN));
+
+  // message: stored and typed masked; a message with no secret reaches the step exactly as written (trimmed).
+  const run = lastRun(r.task.id);
+  store.setSessionState(run.id, 'running', 'fake');
+  store.db.prepare("UPDATE sessions SET runtime = 'claude-tmux', tmux_target = ? WHERE id = ?").run(`jv-${run.id}`, run.id);
+  const typed: string[] = [];
+  const typing = { ...deps, typeIntoLive: async (_s: unknown, _session: unknown, t: string) => (typed.push(t), true) };
+  const m = await T.messageTask(store, r.task.id, `  the token is ${FAKE_TOKEN}, use it  `, { env: {}, deps: typing });
+  assert.equal(m.message.text, 'the token is [redacted], use it');
+  assert.equal(store.getMessage(m.message.id)!.text, 'the token is [redacted], use it');
+  assert.deepEqual(typed, ['From the owner: the token is [redacted], use it']);
+  const plain = 'Keep  the   spacing,\ttabs, "quotes", sk-short and [brackets] as typed.';
+  const p = await T.messageTask(store, r.task.id, plain, { env: {}, deps: typing });
+  assert.equal(store.getMessage(p.message.id)!.text, plain);
+  assert.equal(typed[1], `From the owner: ${plain}`);
+  await assert.rejects(T.messageTask(store, r.task.id, '   ', { env: {}, deps: typing }), /the message is empty/);
+
+  // answer: stored masked, and the answer returned is the masked one.
+  endRun(run.id, { status: 'blocked', summary: 'Need the key.' });
+  store.setTaskState(r.task.id, 'waiting-owner', 'blocked');
+  const a = await T.answerTask(store, r.task.id, `It is ${FAKE_TOKEN}`, { env: {}, deps });
+  assert.equal(a.answer, 'It is [redacted]');
+  assert.equal(store.getMessage(a.message!.id)!.text, 'It is [redacted]');
+  const all = store.db.prepare('SELECT text FROM messages WHERE task_id = ?').all(r.task.id) as Array<{ text: string }>;
+  assert.ok(all.every((x) => !x.text.includes(FAKE_TOKEN)));
 });

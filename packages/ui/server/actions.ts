@@ -5,7 +5,11 @@
 // - name "answer" with a string context.label is `jv task answer T "<label>"` (core answerTask);
 // - anything else is `jv task message T "UI action <name>: <context as JSON, at most 4000 characters>"` (core
 //   messageTask);
-// - either way the raw action (JSON, at most 65536 characters) goes into the message row's meta_json.
+// - either way the action (JSON, at most 65536 characters) goes into the message row's meta_json.
+//
+// Known secrets are masked before anything is stored (as core's messageTask and answerTask mask their text): the
+// context is masked before it is cut to 4000 characters (cutting first could leave part of a secret), and meta_json
+// is the action with every string masked; an action with no secret in it is kept as it was posted.
 //
 // messageTask and answerTask take no meta_json, so the row they return is updated right after (one UPDATE on the
 // store's own connection). An answer to a landing ask ("Land now" or "Leave it") writes no message row, so it has no
@@ -14,6 +18,7 @@
 
 import { refused } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
+import { redactValue } from 'jevellan-core/redact';
 import type { Store } from 'jevellan-core/store';
 import { answerTask, messageTask, type TaskDeps } from 'jevellan-core/tasks';
 import type { MessageRow } from 'jevellan-core/types';
@@ -56,7 +61,7 @@ export function parseUiAction(value: unknown): { action: UiAction; json: string 
 
 /** The text of a non-answer action's message. */
 export function actionMessageText(action: UiAction): string {
-  let context = JSON.stringify(action.context ?? {});
+  let context = JSON.stringify(redactValue(action.context ?? {}));
   if (context.length > UI_ACTION_CONTEXT_MAX) context = `${context.slice(0, UI_ACTION_CONTEXT_MAX - 3)}...`;
   return `UI action ${action.name}: ${context}`;
 }
@@ -75,7 +80,8 @@ function withMeta(store: Store, message: MessageRow, json: string): MessageRow {
 
 /** Applies a posted A2UI action to a task (see the header). */
 export async function applyUiAction(store: Store, taskId: string, posted: unknown, deps: Partial<TaskDeps> = {}): Promise<UiActionResult> {
-  const { action, json } = parseUiAction(posted);
+  const { action } = parseUiAction(posted);
+  const json = JSON.stringify(redactValue(action));
   const id = normalizeId(taskId);
   const label = answerLabel(action);
   if (label !== undefined) {

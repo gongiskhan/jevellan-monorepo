@@ -226,10 +226,12 @@ export function synthesizeReport(
   report: { status: ReportStatus; summary: string; limitations: string },
   options: { redactor?: Redactor } = {},
 ): WriteReportResult {
+  // Masked before the cut: a secret across the cut would otherwise leave its first part in the summary.
+  const redactor = options.redactor ?? defaultRedactor();
   return writeReport(
     store,
     sessionId,
-    { status: report.status, summary: cut(report.summary.trim() || 'No report.', SUMMARY_MAX) },
+    { status: report.status, summary: cut(redactor.redact(report.summary.trim() || 'No report.'), SUMMARY_MAX) },
     { ...options, synthesized: report.limitations },
   );
 }

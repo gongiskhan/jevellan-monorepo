@@ -3,11 +3,12 @@
 // planning task (kind single, duty plan, placed by Jev like any work) for the next few tasks. It never starts them:
 // finish() creates them queued, with after links, and the bot admits them under its limits.
 //
-// Goals: addGoal, listGoals, requireGoal, doneGoal and pauseGoal (open or paused to done, open to paused; done is
-// final), goalView and the text of jv goal list|show. The plan job's request id is plan:<project>:<YYYY-MM-DD> (local
-// day), so a schedule and a manual run on the same day are one job; --force adds a suffix (jobs.ts, M-017). The
-// template is templates/plan.md, verbatim from the brief, a candidate to become a duty skill later (M-018). The plan
-// task's lists leave out the jobs' own work tasks (request id job:<J>): a planning or tidying task is not project work.
+// Goals: addGoal (title and text masked for known secrets before they are stored), listGoals, requireGoal, doneGoal
+// and pauseGoal (open or paused to done, open to paused; done is final), goalView and the text of jv goal list|show.
+// The plan job's request id is plan:<project>:<YYYY-MM-DD> (local day), so a schedule and a manual run on the same
+// day are one job; --force adds a suffix (jobs.ts, M-017). The template is templates/plan.md, verbatim from the brief,
+// a candidate to become a duty skill later (M-018). The plan task's lists leave out the jobs' own work tasks (request
+// id job:<J>): a planning or tidying task is not project work.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -17,6 +18,7 @@ import { notFound, refused } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
 import { lastJsonBlock, localDay, type JobHandler } from 'jevellan-core/jobs';
 import { paths } from 'jevellan-core/paths';
+import { redact } from 'jevellan-core/redact';
 import type { ReportView } from 'jevellan-core/report';
 import type { Store } from 'jevellan-core/store';
 import { createTask, localStamp, type CreateTaskInput } from 'jevellan-core/tasks';
@@ -48,9 +50,10 @@ function requireProject(store: Store, name: string): ProjectRow {
 
 export function addGoal(store: Store, input: { project: string; title: string; text: string; priority?: number }): GoalRow {
   const project = requireProject(store, input.project);
-  // A title is one line, as a task's is (jv goal list prints one line per goal).
-  const title = input.title.replace(/\s+/g, ' ').trim();
-  return store.createGoal({ project_id: project.id, title, text: input.text, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
+  // A title is one line, as a task's is (jv goal list prints one line per goal). Title and text are masked for known
+  // secrets before they are stored, as a task's are.
+  const title = redact(input.title).replace(/\s+/g, ' ').trim();
+  return store.createGoal({ project_id: project.id, title, text: redact(input.text), ...(input.priority !== undefined ? { priority: input.priority } : {}) });
 }
 
 export function requireGoal(store: Store, id: string): GoalRow {

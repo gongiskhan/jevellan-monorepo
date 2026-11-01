@@ -103,7 +103,7 @@ const result = (sid: string, totals: { input: number; output: number; read?: num
 
 test('query options for a write duty: section 6.1 exactly', () => {
   const s = newRun();
-  const o = sdk.queryOptions(s, turnInput('write'), { type: 'sdk', name: 'jv' } as never, undefined, () => {});
+  const o = sdk.queryOptions(s, turnInput('write'), { type: 'sdk', name: 'jv' } as never, undefined, () => {}, '/t/R.mcp.json');
   assert.equal(o.cwd, seeded.repo);
   assert.deepEqual(o.env, { HOME: '/h', JV_SESSION: 'x' });
   assert.equal(o.model, 'model-strong');
@@ -112,18 +112,20 @@ test('query options for a write duty: section 6.1 exactly', () => {
   assert.equal(o.permissionMode, 'bypassPermissions');
   assert.equal(o.allowDangerouslySkipPermissions, true);
   assert.equal(o.tools, undefined);
-  assert.deepEqual(Object.keys(o.mcpServers!).sort(), ['jv', 'pw']);
+  // The project's servers go to Claude Code in their mode 600 file, not inline: only the in-process jv server is here.
+  assert.deepEqual(Object.keys(o.mcpServers!).sort(), ['jv']);
+  assert.deepEqual(o.extraArgs, { 'mcp-config': '/t/R.mcp.json' });
   assert.deepEqual(o.settingSources, ['user']);
   assert.equal(o.includePartialMessages, true);
   assert.equal(o.maxTurns, undefined);
   assert.equal(o.hooks, undefined);
   assert.equal(o.resume, undefined);
-  assert.equal(sdk.queryOptions(s, turnInput('write'), { type: 'sdk', name: 'jv' } as never, 'native-1', () => {}).resume, 'native-1');
+  assert.equal(sdk.queryOptions(s, turnInput('write'), { type: 'sdk', name: 'jv' } as never, 'native-1', () => {}, '/t/R.mcp.json').resume, 'native-1');
 });
 
 test('query options for read-only duties: dontAsk, the read-only tools, the report tool allowed; plan may Write', () => {
   const s = newRun();
-  const o = sdk.queryOptions(s, turnInput('read-only'), { type: 'sdk', name: 'jv' } as never, undefined, () => {});
+  const o = sdk.queryOptions(s, turnInput('read-only'), { type: 'sdk', name: 'jv' } as never, undefined, () => {}, '/t/R.mcp.json');
   assert.equal(o.permissionMode, 'dontAsk');
   assert.equal(o.allowDangerouslySkipPermissions, undefined);
   assert.deepEqual(o.tools, ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch']);
@@ -131,11 +133,11 @@ test('query options for read-only duties: dontAsk, the read-only tools, the repo
   assert.equal(REPORT_TOOL_QUALIFIED, 'mcp__jv__jv_report');
   assert.ok(o.allowedTools!.includes('mcp__pw'));
   assert.ok(!o.allowedTools!.includes('Write'));
-  const plan = sdk.queryOptions(s, turnInput('read-only', ['plan.md']), { type: 'sdk', name: 'jv' } as never, undefined, () => {});
+  const plan = sdk.queryOptions(s, turnInput('read-only', ['plan.md']), { type: 'sdk', name: 'jv' } as never, undefined, () => {}, '/t/R.mcp.json');
   assert.deepEqual(plan.tools, ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch', 'Write']);
   assert.ok(plan.allowedTools!.includes('Write'));
   const odd = store.createSession({ ...s, request_id: 'req-sdk-odd', effort: 'extreme' } as never).row;
-  assert.equal(sdk.queryOptions(odd, turnInput('write'), {} as never, undefined, () => {}).effort, undefined);
+  assert.equal(sdk.queryOptions(odd, turnInput('write'), {} as never, undefined, () => {}, '/t/R.mcp.json').effort, undefined);
 });
 
 test('a turn: native id before the first text, events, the in-process report tool, usage', async () => {
@@ -281,6 +283,53 @@ test('an unsuccessful result fails the turn with its reason; an abort stops it',
   await assert.rejects(() => r2.start(t, { prompt: 'Start', ...turnInput('write'), signal: controller.signal }), (e: unknown) => e instanceof RunStopped);
 });
 
+test('a secret across a cut (tool texts at 4000, error messages at 300) or split between two stderr chunks is masked whole', async () => {
+  const { Redactor } = await import('../src/redact.js');
+  const secret = `fake-long-secret-${'P0o9I8u7'.repeat(10)}`;
+  const redactor = new Redactor([secret]);
+  const near = (n: number) => `${'z'.repeat(n)}${secret} and after ${'w'.repeat(300)}`;
+  const stderrSeen: string[] = [];
+  const noServers = { ...turnInput('write'), mcp: { ...turnInput('write').mcp, servers: {} } };
+  const s = newRun();
+  const runtime = sdk.createClaudeSdkRuntime({
+    openStore: () => store,
+    redactor,
+    stderr: (text) => stderrSeen.push(text),
+    query: ({ options }) =>
+      (async function* () {
+        options.stderr!(`starting ${secret.slice(0, 40)}`);
+        options.stderr!(`${secret.slice(40)} ready\n`);
+        yield init('native-S');
+        yield { type: 'assistant', session_id: 'native-S', message: { content: [{ type: 'tool_use', id: 'tuS', name: 'Write', input: near(sdk.TOOL_TEXT_MAX - 50) }] } };
+        yield { type: 'user', session_id: 'native-S', message: { content: [{ type: 'tool_result', tool_use_id: 'tuS', content: near(sdk.TOOL_TEXT_MAX - 30) }] } };
+        yield result('native-S', { input: 1, output: 1 }, { subtype: 'error_during_execution', is_error: true, errors: [near(280)] });
+      })(),
+  });
+  await assert.rejects(() => runtime.start(s, { prompt: 'Start', ...noServers }), (e: unknown) => e instanceof RunFailure);
+  const stored = store.listEvents(s.id).map((e) => e.payload);
+  assert.deepEqual(store.listEvents(s.id).map((e) => e.kind), ['tool-call', 'tool-result', 'usage', 'error']);
+  for (const payload of stored) assert.ok(!payload.includes(secret.slice(0, 20)), `an event keeps part of the secret: ${payload.slice(0, 80)}`);
+  assert.equal(stored.filter((p) => p.includes('[redacted]')).length, 3);
+  const log = stderrSeen.join('');
+  assert.ok(!log.includes(secret.slice(0, 20)) && !log.includes(secret.slice(40, 60)), 'stderr keeps part of the secret');
+  assert.equal(log, 'starting [redacted] ready\n');
+
+  const t = newRun();
+  const failing = sdk.createClaudeSdkRuntime({
+    openStore: () => store,
+    redactor,
+    stderr: () => {},
+    query: () =>
+      (async function* () {
+        yield init('native-T');
+        throw new Error(near(280));
+      })(),
+  });
+  await assert.rejects(() => failing.start(t, { prompt: 'Start', ...noServers }), (e: unknown) => e instanceof RunFailure && !(e as Error).message.includes(secret.slice(0, 20)));
+  const error = store.lastEvent(t.id, 'error')!.payload;
+  assert.ok(!error.includes(secret.slice(0, 20)) && error.includes('[redacted]'), 'the caught error keeps part of the secret');
+});
+
 test('claudeStreamUsage: unified windows, the event own window, nothing for per-model windows', () => {
   assert.deepEqual(sdk.claudeStreamUsage({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'seven_day', utilization: 0.123, resetsAt: 1_900_000_000 } }), {
     weeklyPct: 12.3,
@@ -289,4 +338,47 @@ test('claudeStreamUsage: unified windows, the event own window, nothing for per-
   assert.equal(sdk.claudeStreamUsage({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'seven_day_opus', utilization: 0.9 } }), undefined);
   assert.equal(sdk.claudeStreamUsage({ type: 'assistant' }), undefined);
   assert.deepEqual(sdk.claudeStreamUsage({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 1.5 } } } }), { fiveHourPct: 100 });
+});
+
+test('project MCP server env and header values reach Claude Code in a mode 600 file, never on its command line', async () => {
+  const { chmodSync, existsSync, readFileSync, statSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { query: realQuery } = await import('@anthropic-ai/claude-agent-sdk');
+  // A fake Claude Code (no model is reached): it writes its arguments to a file and exits.
+  const out = join(home, 'claude-argv.json');
+  const fake = join(home, 'fake-claude');
+  writeFileSync(fake, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(3);\n`);
+  chmodSync(fake, 0o755);
+  const region = 'fake-region-value-16180';
+  const header = 'fake-project-header-1414';
+  const base = turnInput('write');
+  const input = {
+    ...base,
+    env: { HOME: home, PATH: process.env.PATH ?? '/usr/bin:/bin' },
+    mcp: {
+      ...base.mcp,
+      servers: {
+        tracker: { type: 'stdio' as const, command: 'tracker-mcp', args: ['--stdio'], env: { TRACKER_REGION: region } },
+        docs: { type: 'http' as const, url: 'http://127.0.0.1:9/mcp', headers: { 'X-Project': header } },
+      },
+    },
+  };
+  const s = newRun();
+  const runtime = sdk.createClaudeSdkRuntime({
+    openStore: () => store,
+    stderr: () => {},
+    query: ({ prompt, options }) => realQuery({ prompt, options: { ...options, pathToClaudeCodeExecutable: fake } }) as never,
+  });
+  await assert.rejects(() => runtime.start(s, { prompt: 'Start', ...input }), (e: unknown) => e instanceof RunFailure);
+  assert.ok(existsSync(out), 'the fake Claude Code ran');
+  const argv = (JSON.parse(readFileSync(out, 'utf8')) as string[]).join(' ');
+  assert.ok(!argv.includes(region) && !argv.includes(header), `a value is on the command line: ${argv}`);
+  const at = argv.indexOf('--mcp-config ');
+  assert.ok(at >= 0, argv);
+  const file = argv.slice(at + '--mcp-config '.length).split(' ')[0]!;
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const doc = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers: Record<string, { env?: Record<string, string>; headers?: Record<string, string> }> };
+  assert.deepEqual(Object.keys(doc.mcpServers).sort(), ['docs', 'tracker']);
+  assert.equal(doc.mcpServers.tracker!.env!.TRACKER_REGION, region);
+  assert.equal(doc.mcpServers.docs!.headers!['X-Project'], header);
 });

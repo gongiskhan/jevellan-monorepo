@@ -9,7 +9,9 @@
 //   jv attach and jv providers login use the same binary (codexExecutable), so a thread is always resumed by the
 //   version that wrote it.
 // - The report tool is jv-report-mcp through the thread's MCP config (mcp_servers.jv.command/args/env, tool calls
-//   pre-approved); project.json's servers are added beside it. No Jevellan safety hook, no daemon variables.
+//   pre-approved); project.json's servers are added beside it, their env and header values (secrets among them)
+//   through the Codex process's environment (env_vars, env_http_headers), never in config, which the SDK turns into
+//   command line arguments. No Jevellan safety hook, no daemon variables.
 // - project_doc_max_bytes is 256 KiB (Jevellan's bound), so a large AGENTS.md is read whole instead of refused.
 // - Codex has no system prompt channel: the first message of a new thread is "Instructions for this session:", the
 //   system append (rules, duty, AGENTS.md, task block) and then the prompt. A resumed thread already holds them, so a
@@ -18,9 +20,11 @@
 //   work (Jevellan's worktreeGitDirs); read-only for read-only duties; plan (one allowed file, plan.md) gets
 //   workspace-write without network and without the git directories, so it can write plan.md but cannot commit.
 // - Events: agent messages and reasoning once per completed item (D-027's rule for claude-sdk); command executions,
-//   MCP calls, file changes and web searches as tool-call at first sight and tool-result when completed, trimmed to
-//   4000 characters. Usage from turn.completed: Codex reports the thread's running totals there, so the event carries
-//   this turn's share (the totals minus what the earlier rows of the thread counted, as D-027 does for claude-sdk).
+//   MCP calls, file changes and web searches as tool-call at first sight and tool-result when completed, masked and
+//   then trimmed to 4000 characters (masking first, so a secret across the cut is masked whole; error messages too,
+//   before their 300-character cut). Usage from turn.completed: Codex reports the thread's running totals there, so
+//   the event carries this turn's share (the totals minus what the earlier rows of the thread counted, as D-027 does
+//   for claude-sdk).
 // - No report after the turn: the thread is resumed once with NO_REPORT_PROMPT in the same row; still none, a
 //   `blocked` report is synthesized (section 5's backstop, as claude-sdk does).
 
@@ -30,7 +34,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type { Codex as CodexClass, CodexOptions, ThreadOptions } from '@openai/codex-sdk';
 import { refused } from '../errors.js';
-import { recordEvent, tailEvents } from '../events.js';
+import { recordEvent, redactedTrim, tailEvents, TOOL_TEXT_MAX } from '../events.js';
 import { processGroup, stopRun } from '../launcher.js';
 import { NO_REPORT_PROMPT } from '../prompt.js';
 import { defaultRedactor, type Redactor } from '../redact.js';
@@ -38,12 +42,12 @@ import { REPORT_SERVER_NAME, synthesizeReport } from '../report.js';
 import { openStore, type Store } from '../store.js';
 import type { EventKind, SessionRow } from '../types.js';
 import { earlierTotals, usageDelta, type Totals } from './claude-sdk.js';
-import { RunFailure, RunStopped, type McpServerSpec, type RuntimeModule, type StartInput, type TurnInput } from './types.js';
+import { RunFailure, RunStopped, type RuntimeModule, type StartInput, type TurnInput } from './types.js';
 
 export const INSTRUCTIONS_PREFIX = 'Instructions for this session:';
 /** Jevellan's bounded project instruction budget for managed Codex sessions. */
 export const PROJECT_DOC_MAX_BYTES = 256 * 1024;
-export const TOOL_TEXT_MAX = 4000;
+export { TOOL_TEXT_MAX };
 export const NO_REPORT_SUMMARY = 'The session ended its turn without jv_report, also after being asked once more (no report).';
 export const NO_REPORT_LIMITATIONS = 'synthesized: no report';
 const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -117,25 +121,53 @@ export function worktreeGitDirs(cwd: string): string[] | undefined {
 
 type ConfigObject = NonNullable<CodexOptions['config']>;
 
-/** The thread's MCP servers: jv-report-mcp (pre-approved) and project.json's servers (stdio and http). */
-export function codexMcpServers(input: Pick<TurnInput, 'mcp'>): ConfigObject {
-  const out: ConfigObject = {};
-  const add = (name: string, spec: McpServerSpec) => {
+/** The variable of the Codex environment that carries one header of a project's http MCP server (env_http_headers). */
+export function mcpHeaderVariable(server: string, header: string): string {
+  return `JV_MCP_${server}_${header}`.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+}
+
+/**
+ * The thread's MCP servers: jv-report-mcp (pre-approved) and project.json's servers (stdio and http), plus the
+ * variables the Codex process's environment must hold for them. The SDK turns config into `--config` arguments, so a
+ * project server's env and header values (which may be secrets, run.ts) never go into config: each goes into the
+ * environment and config only names it, env_vars for a stdio server, env_http_headers for an http one. Codex has one
+ * environment for every server, so a name that two servers, or the worker's own environment, set to different values
+ * is refused. The report server's env (JV_HOME, no secret) stays in config.
+ */
+export function codexMcpServers(input: Pick<TurnInput, 'mcp' | 'env'>): { servers: ConfigObject; env: Record<string, string> } {
+  const servers: ConfigObject = {};
+  const env: Record<string, string> = {};
+  const carry = (variable: string, value: string, what: string): void => {
+    const before = env[variable] ?? input.env[variable];
+    if (before !== undefined && before !== value) {
+      throw refused(`${what} needs ${variable} in the Codex environment, which already holds another value; Codex gives every MCP server the same environment`);
+    }
+    env[variable] = value;
+  };
+  for (const [name, spec] of Object.entries(input.mcp.servers)) {
+    if (name === REPORT_SERVER_NAME) continue;
     if ('command' in spec) {
-      out[name] = {
-        command: spec.command,
-        args: spec.args ?? [],
-        ...(spec.env && Object.keys(spec.env).length ? { env: spec.env } : {}),
-        default_tools_approval_mode: 'approve',
-      };
+      const names = Object.keys(spec.env ?? {});
+      for (const k of names) carry(k, spec.env![k]!, `MCP server ${name}`);
+      servers[name] = { command: spec.command, args: spec.args ?? [], ...(names.length ? { env_vars: names } : {}), default_tools_approval_mode: 'approve' };
     } else if (spec.type === 'http') {
-      out[name] = { url: spec.url, ...(spec.headers ? { http_headers: spec.headers } : {}), default_tools_approval_mode: 'approve' };
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(spec.headers ?? {})) {
+        headers[k] = mcpHeaderVariable(name, k);
+        carry(headers[k], v, `MCP server ${name}`);
+      }
+      servers[name] = { url: spec.url, ...(Object.keys(headers).length ? { env_http_headers: headers } : {}), default_tools_approval_mode: 'approve' };
     }
     // Codex has no SSE transport; such a project server is left out.
+  }
+  const report = input.mcp.report;
+  servers[REPORT_SERVER_NAME] = {
+    command: report.command,
+    args: report.args ?? [],
+    ...(report.env && Object.keys(report.env).length ? { env: report.env } : {}),
+    default_tools_approval_mode: 'approve',
   };
-  for (const [name, spec] of Object.entries(input.mcp.servers)) if (name !== REPORT_SERVER_NAME) add(name, spec);
-  add(REPORT_SERVER_NAME, input.mcp.report);
-  return out;
+  return { servers, env };
 }
 
 export type DutyAccess = 'write' | 'plan' | 'read-only';
@@ -145,16 +177,17 @@ export function dutyAccess(input: Pick<TurnInput, 'tools'>): DutyAccess {
   return input.tools.writeFiles?.length ? 'plan' : 'read-only';
 }
 
-/** The Codex client options of a turn. */
+/** The Codex client options of a turn: the worker's environment plus what the project's MCP servers need. */
 export function codexOptions(session: SessionRow, input: TurnInput, executable?: string): CodexOptions {
+  const mcp = codexMcpServers(input);
   return {
-    env: input.env,
+    env: { ...input.env, ...mcp.env },
     ...(executable ? { codexPathOverride: executable } : {}),
     configOverrides: [projectTrustOverride(session.cwd)],
     config: {
       project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
       features: { multi_agent: false },
-      mcp_servers: codexMcpServers(input),
+      mcp_servers: mcp.servers,
     },
   };
 }
@@ -206,11 +239,6 @@ export interface CodexDeps {
 function short(text: string, max = 300): string {
   const t = text.replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max)}...` : t;
-}
-
-function trimmed(text: string, max = TOOL_TEXT_MAX): { text: string; truncated?: true } {
-  const chars = [...text];
-  return chars.length <= max ? { text } : { text: chars.slice(0, max).join(''), truncated: true };
 }
 
 function json(value: unknown): string {
@@ -298,7 +326,7 @@ async function runTurn(
           if (done && typeof item.text === 'string' && item.text.trim() !== '') emit('thinking', { text: item.text });
           continue;
         case 'error':
-          if (done && typeof item.message === 'string') emit('error', { message: short(item.message), item: true });
+          if (done && typeof item.message === 'string') emit('error', { message: short(redactor.redact(item.message)), item: true });
           continue;
         case 'todo_list':
           continue;
@@ -324,7 +352,7 @@ async function runTurn(
                   : item.type === 'file_change'
                     ? item.changes
                     : item.query;
-            const t = trimmed(json(inputValue ?? ''));
+            const t = redactedTrim(redactor, json(inputValue ?? ''), TOOL_TEXT_MAX);
             emit('tool-call', { id, name, input: t.text, ...(t.truncated ? { inputTruncated: true } : {}) });
           }
           if (done && !ended.has(id)) {
@@ -338,7 +366,7 @@ async function runTurn(
                     ? json(item.changes)
                     : '';
             const ok = item.type === 'web_search' || (item.status === 'completed' && (item.type !== 'command_execution' || item.exit_code === 0));
-            const t = trimmed(output);
+            const t = redactedTrim(redactor, output, TOOL_TEXT_MAX);
             emit('tool-result', { id, ok, output: t.text, ...(t.truncated ? { outputTruncated: true } : {}) });
           }
           continue;

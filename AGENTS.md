@@ -117,10 +117,11 @@ also need `--import ./dist-test/test/setup.js`, see Tests).
 
 Scripts:
 
-- `node scripts/secret-scan.mjs [--untracked] [--history] [--values-from DIR]`: scans the tracked files (and
+- `node scripts/secret-scan.mjs [--untracked] [--history] [--values-from PATH]...`: scans the tracked files (and
   untracked, not ignored ones, or every blob in the history, when asked) for key, token and private key shapes, and
-  with `--values-from ~/.jv/secrets` for the exact values of the key files; prints file, line and the kind of
-  shape, never the value; exit 0 clean, 1 found, 2 could not scan. It installs no git hook.
+  with `--values-from ~/.jv/secrets` (a folder) or `--values-from ~/.jv/ui-password` (a file) for the exact values
+  of those files; prints file, line and the kind of shape, never the value; exit 0 clean, 1 found, 2 could not
+  scan. It installs no git hook.
 - `node scripts/bump-version.mjs <version>`: one exact version in the root `package.json`, every
   `packages/*/package.json`, every dependency one workspace package has on another, and `package-lock.json`'s
   workspace entries. `--check [<version>]` changes nothing and exits 1 naming each difference.

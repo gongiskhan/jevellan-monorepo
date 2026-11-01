@@ -8,6 +8,11 @@
 // It also loads the OAuth logins that live in provider homes (<home>/.claude/.credentials.json and
 // <home>/.codex/auth.json) and the copies jv archived under ~/.jv/archive/credentials/: those are JSON, so every
 // string value of 20 characters or more (the token fields) is masked on its own; whole lines would never match.
+//
+// Only whole values match, so text is masked before it is cut, never after (a cut half no longer matches): callers
+// that keep a bounded part of a text mask it first (events.redactedTrim), and output that arrives in pieces (a child's
+// stdout and stderr) goes through redactingWriter, which holds back the last (longest value - 1) characters until the
+// next piece or the end, so a value split between two pieces is still masked whole.
 
 import { readdirSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
@@ -186,6 +191,11 @@ export class Redactor {
     return this.values.length;
   }
 
+  /** The length of the longest value masked, 0 when none is known (never the value itself). */
+  get longest(): number {
+    return this.values[0]?.length ?? 0;
+  }
+
   /** The text with every known secret replaced by [redacted]. */
   redact(text: string): string {
     let out = text;
@@ -271,4 +281,36 @@ export function redact(text: string): string {
 /** Masks every known secret in a JSON-like value. */
 export function redactValue<T>(value: T): T {
   return defaultRedactor().redactValue(value);
+}
+
+/** A sink for text that arrives in pieces; end() writes what is still held back. */
+export interface RedactingWriter {
+  write(text: string): void;
+  end(): void;
+}
+
+/**
+ * Masks text that arrives in pieces (a child's stdout or stderr) before `out` gets it. A value can be split between
+ * two pieces, so the last (longest value - 1) characters of the masked text wait for the next piece: a value that is
+ * not whole yet always fits in what waits. end() masks and writes the rest. With no value known, nothing waits.
+ */
+export function redactingWriter(out: (text: string) => void, redactor: Pick<Redactor, 'redact' | 'longest'> = defaultRedactor()): RedactingWriter {
+  let held = '';
+  return {
+    write(text: string): void {
+      if (text === '') return;
+      const masked = redactor.redact(held + text);
+      let cut = Math.max(0, masked.length - Math.max(0, redactor.longest - 1));
+      // A surrogate pair is never split between two writes.
+      if (cut > 0 && cut < masked.length && /[\uD800-\uDBFF]/.test(masked.charAt(cut - 1))) cut--;
+      held = masked.slice(cut);
+      if (cut > 0) out(masked.slice(0, cut));
+    },
+    end(): void {
+      if (held === '') return;
+      const rest = redactor.redact(held);
+      held = '';
+      out(rest);
+    },
+  };
 }

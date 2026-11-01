@@ -2,7 +2,7 @@
 // local date, late catch-up once, quiet hours, errors), run now, pause and resume, job schedules, the view.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -138,4 +138,17 @@ describe('fire', () => {
     assert.equal(failed.result, 'error: no project sandbox');
     assert.equal(failed.task, undefined);
   });
+});
+
+test('a task schedule masks known secrets in its title and text before spec_json is written', async () => {
+  const secret = 'fake-schedule-secret-0123456789';
+  mkdirSync(join(home, 'secrets'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, 'secrets', 'schedule.key'), `${secret}\n`, { mode: 0o600 });
+  const s = S.addSchedule(store, { project: 'sandbox', name: 'Rotate weekly', cron: '0 3 * * 1', tz: 'Europe/Lisbon', kind: 'task', task: { kind: 'single', duty: 'verify', title: `Check ${secret}`, text: `Call with ${secret} and report.` } }, NOW);
+  assert.ok(!s.spec_json.includes(secret), 'spec_json holds the secret');
+  assert.deepEqual(JSON.parse(s.spec_json), { kind: 'single', duty: 'verify', title: 'Check [redacted]', text: 'Call with [redacted] and report.', visible: false });
+  const before = calls.length;
+  await S.runNow(store, s, NOW, deps);
+  assert.equal(calls.length, before + 1);
+  assert.ok(!JSON.stringify(calls.at(-1)).includes(secret));
 });

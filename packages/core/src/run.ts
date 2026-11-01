@@ -12,6 +12,15 @@
 //
 // A first turn in the task worktree runs the worktree setup command first (git.ts runWorktreeSetup).
 //
+// project.json mcpServers holds no secret. A value a server needs that is a secret lives in a file under ~/.jv/secrets
+// (which the redactor masks) and the server names it: `envFiles: {NAME: file}` for a stdio server's environment,
+// `headerFiles: {Header: file}` and `bearerTokenFile` (Authorization: Bearer <content>) for an http or sse server.
+// projectMcpServers reads those files into the spec's env and headers; a file outside ~/.jv/secrets, missing, empty
+// or not mode 600 is refused (exit 2, naming the file, never its content), and so is a literal env or header value
+// under a name that looks like a credential's (a word such as key, token, secret, password, auth, cookie). The
+// runtimes never put these values on a command line: codex passes them through the worker's environment, claude-sdk
+// and claude-tmux in a mode 600 --mcp-config file.
+//
 // Exit code: 0 done or stopped, 1 failed, 2 refused (the runtime is not built yet, the row cannot run).
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -21,10 +30,10 @@ import { isJvError, notFound, refused } from './errors.js';
 import { recordEvent } from './events.js';
 import { runWorktreeSetup } from './git.js';
 import { processGroup, runMessage } from './launcher.js';
-import { paths } from './paths.js';
+import { isInside, paths, realpathAsFarAsExists, resolveConfigPath } from './paths.js';
 import { memoryApi, memoryBlock } from './memory-port.js';
 import { buildSystemAppend, CONTINUE_PROMPT, resumeMessage, START_PROMPT } from './prompt.js';
-import { findProvider, loadProviders, type ProvidersConfig } from './providers.js';
+import { findProvider, keyFileStatus, loadProviders, readSecretFile, type ProvidersConfig } from './providers.js';
 import { redact } from './redact.js';
 import { reportMcpServerSpec } from './report-mcp.js';
 import { loadRuntime } from './runtimes/index.js';
@@ -53,7 +62,45 @@ export interface PrepareOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** project.json mcpServers: an object by name, or a list of entries with a name. `jv` is reserved. */
+/** Words of an environment variable or header name that mark a credential (GITHUB_TOKEN, X-Api-Key, Authorization). */
+const SECRET_NAME_WORDS = new Set(['key', 'apikey', 'token', 'secret', 'password', 'passwd', 'credential', 'credentials', 'auth', 'authorization', 'cookie', 'bearer']);
+
+/** Whether a name looks like a credential's: one of its words (split at _, -, and camel case) is a SECRET_NAME_WORDS. */
+export function looksLikeSecretName(name: string): boolean {
+  return name.split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).some((w) => SECRET_NAME_WORDS.has(w.toLowerCase()));
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+    : {};
+}
+
+/**
+ * The content of a secret file a project's MCP server names (envFiles, headerFiles, bearerTokenFile). Refuses (exit
+ * 2, naming the file, never its content) a path outside ~/.jv/secrets (symlinks resolved), and a file that is
+ * missing, empty, not a file or not mode 600, as jv doctor judges key files.
+ */
+function mcpSecretValue(projectFile: string, field: string, written: string): string {
+  const file = resolveConfigPath(written);
+  const real = realpathAsFarAsExists(file);
+  if (!isInside(real, realpathAsFarAsExists(paths.secretsDir))) {
+    throw refused(`${projectFile}: ${field} names ${written}, which is not a file under ${paths.secretsDir}; keep MCP server secrets there`);
+  }
+  const status = keyFileStatus(real);
+  if (status.state !== 'ok') {
+    const why = status.state === 'mode' ? `has mode ${status.mode} (chmod 600 ${file})` : status.state === 'not-a-file' ? 'is not a file' : `is ${status.state}`;
+    throw refused(`${projectFile}: ${field}: ${file} ${why}`);
+  }
+  const value = readSecretFile(real);
+  if (value === undefined) throw refused(`${projectFile}: ${field}: ${file} cannot be read`);
+  return value;
+}
+
+/**
+ * project.json mcpServers: an object by name, or a list of entries with a name. `jv` is reserved. Secret values come
+ * from files under ~/.jv/secrets (envFiles, headerFiles, bearerTokenFile) and are read here (see the header).
+ */
 export function projectMcpServers(projectName: string): Record<string, McpServerSpec> {
   const file = paths.projectJson(projectName);
   if (!existsSync(file)) return {};
@@ -68,21 +115,43 @@ export function projectMcpServers(projectName: string): Record<string, McpServer
     if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw refused(`${file}: mcpServers entry has no valid name`);
     if (name === 'jv') throw refused(`${file}: the MCP server name jv is reserved for the report tool`);
     const s = (spec ?? {}) as Record<string, unknown>;
+    const field = (key: string) => `mcpServers.${name}.${key}`;
     if (typeof s.command === 'string' && s.command !== '') {
+      if (s.headers !== undefined || s.headerFiles !== undefined || s.bearerTokenFile !== undefined) {
+        throw refused(`${file}: ${field('headers')}, headerFiles and bearerTokenFile are for http and sse servers; a stdio server takes env and envFiles`);
+      }
+      const env = stringMap(s.env);
+      for (const k of Object.keys(env)) {
+        if (looksLikeSecretName(k)) throw refused(`${file}: ${field(`env.${k}`)} looks like a secret; put the value in a file under ~/.jv/secrets and name it in envFiles`);
+      }
+      for (const [k, f] of Object.entries(stringMap(s.envFiles))) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw refused(`${file}: ${field(`envFiles.${k}`)} is not an environment variable name`);
+        if (k in env) throw refused(`${file}: ${field(`env.${k}`)} is given twice, in env and in envFiles`);
+        env[k] = mcpSecretValue(file, field(`envFiles.${k}`), f);
+      }
       out[name] = {
         type: 'stdio',
         command: s.command,
         ...(Array.isArray(s.args) ? { args: s.args.map(String) } : {}),
-        ...(s.env && typeof s.env === 'object' ? { env: Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, String(v)])) } : {}),
+        ...(Object.keys(env).length ? { env } : {}),
       };
     } else if ((s.type === 'http' || s.type === 'sse') && typeof s.url === 'string') {
-      out[name] = {
-        type: s.type,
-        url: s.url,
-        ...(s.headers && typeof s.headers === 'object'
-          ? { headers: Object.fromEntries(Object.entries(s.headers).map(([k, v]) => [k, String(v)])) }
-          : {}),
+      if (s.env !== undefined || s.envFiles !== undefined) {
+        throw refused(`${file}: ${field('env')} and envFiles are for stdio servers; an ${s.type} server takes headers, headerFiles and bearerTokenFile`);
+      }
+      const headers = stringMap(s.headers);
+      for (const k of Object.keys(headers)) {
+        if (looksLikeSecretName(k)) throw refused(`${file}: ${field(`headers.${k}`)} looks like a secret; put the value in a file under ~/.jv/secrets and name it in headerFiles (or bearerTokenFile)`);
+      }
+      const given = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+      const add = (k: string, value: string) => {
+        if (given.has(k.toLowerCase())) throw refused(`${file}: ${field(`headers.${k}`)} is given twice`);
+        given.add(k.toLowerCase());
+        headers[k] = value;
       };
+      for (const [k, f] of Object.entries(stringMap(s.headerFiles))) add(k, mcpSecretValue(file, field(`headerFiles.${k}`), f));
+      if (s.bearerTokenFile !== undefined) add('Authorization', `Bearer ${mcpSecretValue(file, field('bearerTokenFile'), String(s.bearerTokenFile))}`);
+      out[name] = { type: s.type, url: s.url, ...(Object.keys(headers).length ? { headers } : {}) };
     } else throw refused(`${file}: mcpServers.${name} needs a command, or a type http/sse with a url`);
   };
   if (Array.isArray(raw)) for (const e of raw) take((e as { name?: unknown } | null)?.name, e);

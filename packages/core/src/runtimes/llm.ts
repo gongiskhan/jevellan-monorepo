@@ -16,8 +16,8 @@
 //   provider_usage row for the week is written after each turn.
 //
 // The report is the last fenced ```json block of the answer, validated like a jv_report call. No block, or a block
-// that is not a valid report: a `done` report is synthesized with the whole answer (trimmed to 4000 characters) and
-// "synthesized" in limitations.
+// that is not a valid report: a `done` report is synthesized with the whole answer (masked, then trimmed to 4000
+// characters) and "synthesized" in limitations.
 
 import { randomUUID } from 'node:crypto';
 import { query as sdkQuery, type Options } from '@anthropic-ai/claude-agent-sdk';
@@ -25,7 +25,7 @@ import { recordEvent, tailEvents } from '../events.js';
 import { processGroup, stopRun } from '../launcher.js';
 import { findProvider, loadProviders, readSecretFile, type Provider, type ProvidersConfig } from '../providers.js';
 import { defaultRedactor, type Redactor } from '../redact.js';
-import { parseReport, synthesizeReport, writeReport, SUMMARY_MAX } from '../report.js';
+import { parseReport, synthesizeReport, writeReport } from '../report.js';
 import { openStore, type Store } from '../store.js';
 import type { EventKind, SessionRow } from '../types.js';
 import { recordLocalUsage } from '../usage.js';
@@ -63,7 +63,8 @@ export function recordAnswerReport(store: Store, sessionId: string, answer: stri
     if (parsed !== undefined && parseReport(parsed).ok) return writeReport(store, sessionId, parsed, options);
     reason = SYNTHESIZED_INVALID_BLOCK;
   }
-  const summary = [...answer.trim()].slice(0, SUMMARY_MAX).join('') || 'The answer was empty.';
+  // synthesizeReport masks the answer, then cuts it to SUMMARY_MAX (cutting first could split a secret).
+  const summary = answer.trim() || 'The answer was empty.';
   return synthesizeReport(store, sessionId, { status: 'done', summary, limitations: reason }, options);
 }
 
