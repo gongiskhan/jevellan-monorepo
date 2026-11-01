@@ -98,6 +98,30 @@ function ownerLinesInPane(name) {
   return (capture(name, { history: true }).match(PANE_OWNER_LINE) ?? []).length;
 }
 
+/**
+ * The owner lines Claude Code itself received: user entries of the coordinator's transcript whose text is the typed
+ * "[owner] <message>" line. The pane shows about 50 rows, so a long reply can scroll an earlier owner line off it and
+ * a count of the pane's lines alone cannot tell a new line from an old one.
+ */
+function ownerEntriesInTranscript(file) {
+  if (!file || !existsSync(file)) return 0;
+  let n = 0;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.type !== 'user') continue;
+    const content = entry.message?.content;
+    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n') : '';
+    if (/\[owner\]\s+status\s*$/m.test(text)) n++;
+  }
+  return n;
+}
+
 /** Claude Code shows "esc to interrupt" while it works on a turn. */
 function paneBusy(name) {
   return /esc to interrupt/i.test(capture(name));
@@ -393,6 +417,9 @@ async function main() {
     let measured;
     let firstTextMs;
     const ownerPaneBefore = ownerLinesInPane(TMUX_NAME);
+    const tailRow = queryOne(storeFile(home), 'SELECT value FROM meta WHERE key = ?', `coordinator_tail:${sessionId}`);
+    const transcriptFile = tailRow ? JSON.parse(tailRow.value).file : undefined;
+    const ownerEntriesBefore = ownerEntriesInTranscript(transcriptFile);
     const repliesBefore = await replyCount(page);
     const ownersBefore = await ownerCount(page);
     const box = page.getByLabel('Message the coordinator');
@@ -404,14 +431,20 @@ async function main() {
     const response = await posted.catch((error) => ({ failed: String(error?.message ?? error) }));
     const sent = response.failed ? { error: response.failed } : { status: response.status(), json: await response.json().catch(() => ({})) };
 
-    await check('the composer\'s "status" reaches the tmux window (capture-pane shows the owner line)', async () => {
+    await check('the composer\'s "status" reaches the tmux window (capture-pane shows the owner line, Claude Code received it once)', async () => {
       if (sent.error || sent.status !== 200) return { ok: false, detail: `POST .../coordinator/message: ${sent.error ?? `HTTP ${sent.status} ${JSON.stringify(sent.json).slice(0, 200)}`}` };
+      // The pane must show the owner line, and Claude Code's own transcript must gain exactly one owner entry: the line
+      // typed into the window is the only way text reaches it.
       const after = await waitFor(() => {
-        const n = ownerLinesInPane(TMUX_NAME);
-        return n > ownerPaneBefore ? n : undefined;
-      }, { timeoutMs: 5000, intervalMs: 200 });
+        const entries = ownerEntriesInTranscript(transcriptFile);
+        const pane = ownerLinesInPane(TMUX_NAME);
+        return entries > ownerEntriesBefore && pane >= 1 ? { entries, pane } : undefined;
+      }, { timeoutMs: 10_000, intervalMs: 200 });
       const owners = await page.locator('.pw-owner').count();
-      return { ok: after !== undefined && after === ownerPaneBefore + 1, detail: `pane shows "[owner]  ${MESSAGE}" ${after ?? ownerPaneBefore} time(s) (was ${ownerPaneBefore}); message ${sent.json.messageId} typed ${secs(Date.parse(sent.json.typedAt) - t0)} after Enter (${sent.json.how}); page owner lines ${ownersBefore} -> ${owners}` };
+      return {
+        ok: after !== undefined && after.entries === ownerEntriesBefore + 1,
+        detail: `pane shows "[owner]  ${MESSAGE}" ${after?.pane ?? ownerLinesInPane(TMUX_NAME)} time(s) (was ${ownerPaneBefore}); Claude Code's transcript owner entries ${ownerEntriesBefore} -> ${after?.entries ?? ownerEntriesInTranscript(transcriptFile)}; message ${sent.json.messageId} typed ${secs(Date.parse(sent.json.typedAt) - t0)} after Enter (${sent.json.how}); page owner lines ${ownersBefore} -> ${owners}`,
+      };
     });
 
     await check(`the coordinator's reply appears in the page within ${REPLY_LIMIT_MS / 1000} s of the composer's Enter`, async () => {
