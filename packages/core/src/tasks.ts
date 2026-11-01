@@ -580,7 +580,11 @@ export interface TaskView {
   startedAt: string | null;
   endedAt: string | null;
   steps: StepView[];
-  messages: Array<{ id: string; direction: string; text: string; createdAt: string; deliveredAt: string | null; session: string | null }>;
+  /**
+   * `meta` is the message's meta_json (store schema 2) when it holds an object: the raw A2UI action of a UI action
+   * (packages/ui server/actions.ts), from which the task page shows a surface as already sent. Absent otherwise.
+   */
+  messages: Array<{ id: string; direction: string; text: string; createdAt: string; deliveredAt: string | null; session: string | null; meta?: Record<string, unknown> }>;
   landings: Array<{ id: string; route: string; state: string; reason: string; commit: string | null; createdAt: string; checks: LandingCheckView[] }>;
   workflowDecision?: { id: string; chosen: unknown };
 }
@@ -690,14 +694,18 @@ export function taskView(store: Store, task: TaskRow): TaskView {
         createdAt: dec.created_at,
       })),
     })),
-    messages: store.listMessages({ task_id: task.id }).map((m) => ({
-      id: m.id,
-      direction: m.direction,
-      text: m.text,
-      createdAt: m.created_at,
-      deliveredAt: m.delivered_at,
-      session: m.session_id,
-    })),
+    messages: store.listMessages({ task_id: task.id }).map((m) => {
+      const meta = m.meta_json ? parse(m.meta_json) : null;
+      return {
+        id: m.id,
+        direction: m.direction,
+        text: m.text,
+        createdAt: m.created_at,
+        deliveredAt: m.delivered_at,
+        session: m.session_id,
+        ...(meta !== null && typeof meta === 'object' && !Array.isArray(meta) ? { meta: meta as Record<string, unknown> } : {}),
+      };
+    }),
     landings: store.listLandings({ task_id: task.id }).map((l) => ({
       id: l.id,
       route: l.route,

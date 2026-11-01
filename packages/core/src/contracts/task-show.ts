@@ -113,6 +113,8 @@ export const TaskShowSchema = z.strictObject({
       createdAt: IsoTimeSchema,
       deliveredAt: IsoTimeSchema.nullable(),
       session: SessionIdSchema.nullable(),
+      /** messages.meta_json (schema 2) when it is an object: the raw A2UI action of a UI action. */
+      meta: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
   landings: z.array(

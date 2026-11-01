@@ -9,7 +9,10 @@
 // refetches on every store change, and a new processor would drop what the owner picked or typed. Inputs keep their
 // values in the processor's data model until a Button's action sends them inside `context` (bindings resolved by the
 // renderer). The action (name, surfaceId, sourceComponentId, timestamp, userMessage, context) is posted as {action}
-// to POST /api/tasks/:id/ui-action; afterwards the surface is dimmed with "Sent to the step at HH:MM".
+// to POST /api/tasks/:id/ui-action; afterwards the surface is dimmed with "Sent to the step at HH:MM". The page knows
+// a surface was sent from the store as well (`sentAt`, the time of the message whose meta is its action), so it stays
+// dimmed after a reload and on another device, showing the values that action sent (restoreSent). A surface of a
+// done or stopped task (`closed`) is inert, as in read-only mode: core takes neither an answer nor a message there.
 //
 // Styling: the v0.9 basic catalog renders custom elements in light DOM and adopts each element's styles into the
 // document as constructable stylesheets with selectors scoped to its tag (no inline <style>, so the server's CSP
@@ -54,17 +57,56 @@ export function buildSurfaces(messages: readonly unknown[], onAction: (action: U
   return { processor, problems: [...problems] };
 }
 
-export function A2uiBlock({ taskId, reportId, messages, readonly }: { taskId: string | null; reportId: string; messages: readonly unknown[]; readonly: boolean }) {
-  const [sent, setSent] = useState<{ at: string } | undefined>();
+/**
+ * Puts what a stored action sent back into its surface's data model, so a surface shown as sent after a reload shows
+ * the values that went to the step rather than the step's first ones: each context entry of the source Button's action
+ * that is bound to an absolute data model path gets the value the action carried. Anything else is left as it is.
+ */
+export function restoreSent(processor: MessageProcessor, action: Record<string, unknown>): void {
+  const { surfaceId, sourceComponentId, context } = action;
+  if (typeof surfaceId !== 'string' || typeof sourceComponentId !== 'string' || !context || typeof context !== 'object') return;
+  const surface = processor.getSurfaces().get(surfaceId);
+  const props = surface?.componentsModel.get(sourceComponentId)?.properties as { action?: { event?: { context?: unknown } } } | undefined;
+  const bound = props?.action?.event?.context;
+  if (!surface || !bound || typeof bound !== 'object') return;
+  for (const [key, binding] of Object.entries(bound as Record<string, unknown>)) {
+    const path = binding && typeof binding === 'object' ? (binding as { path?: unknown }).path : undefined;
+    if (typeof path === 'string' && path.startsWith('/') && Object.hasOwn(context, key)) surface.dataModel.set(path, (context as Record<string, unknown>)[key]);
+  }
+}
+
+export function A2uiBlock({
+  taskId,
+  reportId,
+  messages,
+  readonly,
+  sentAt,
+  sentAction,
+  closed,
+}: {
+  taskId: string | null;
+  reportId: string;
+  messages: readonly unknown[];
+  readonly: boolean;
+  /** When the store already holds an action of this surface (the message's time). */
+  sentAt?: string | undefined;
+  /** That stored action (the message's meta), whose sent values the surface shows again. */
+  sentAction?: Record<string, unknown> | undefined;
+  /** The task's state when it takes no input any more (done or stopped). */
+  closed?: string | undefined;
+}) {
+  const [posted, setPosted] = useState<{ at: string } | undefined>();
+  const sent = posted ?? (sentAt ? { at: sentAt } : undefined);
   const [failure, setFailure] = useState<string>();
   const posting = useRef(false);
   const send = useRef<(action: UiAction) => void>(() => undefined);
+  const inert = !!sent || readonly || !!closed;
   send.current = (action: UiAction) => {
-    if (!taskId || readonly || posting.current || sent) return;
+    if (!taskId || inert || posting.current) return;
     posting.current = true;
     setFailure(undefined);
     postUiAction(taskId, action)
-      .then(() => setSent({ at: new Date().toISOString() }))
+      .then(() => setPosted({ at: new Date().toISOString() }))
       .catch((error: unknown) => setFailure(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         posting.current = false;
@@ -84,6 +126,11 @@ export function A2uiBlock({ taskId, reportId, messages, readonly }: { taskId: st
       deleted.unsubscribe();
     };
   }, [built]);
+  const sentKey = sentAction ? JSON.stringify(sentAction) : '';
+  useEffect(() => {
+    if (!posted && sentAction) restoreSent(built.processor, sentAction);
+    // sentKey stands for sentAction, whose identity changes with every refetch.
+  }, [built, sentKey, posted]);
   return (
     <section className="report-ui" aria-label="From the step">
       <h3>From the step</h3>
@@ -93,13 +140,14 @@ export function A2uiBlock({ taskId, reportId, messages, readonly }: { taskId: st
         </p>
       ))}
       {surfaces.length > 0 && (
-        <div className={`jv-a2ui${sent ? ' sent' : ''}${readonly ? ' readonly' : ''}`} aria-disabled={sent || readonly ? true : undefined} inert={sent || readonly ? true : undefined}>
+        <div className={`jv-a2ui${sent ? ' sent' : ''}${readonly ? ' readonly' : ''}${closed && !sent ? ' closed' : ''}`} aria-disabled={inert ? true : undefined} inert={inert ? true : undefined}>
           {surfaces.map((surface) => (
             <A2uiSurface key={surface.id} surface={surface as never} />
           ))}
         </div>
       )}
       {readonly && !sent && surfaces.length > 0 && <p className="muted small-text">Read-only: the surface takes no input here.</p>}
+      {closed && !readonly && !sent && surfaces.length > 0 && <p className="muted small-text">Task {closed}: the surface takes no input.</p>}
       {sent && (
         <p className="ui-sent" role="status">
           Sent to the step at {localTime(sent.at)}

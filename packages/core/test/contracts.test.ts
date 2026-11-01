@@ -162,6 +162,9 @@ recordEvent(store, runA.id, 'end', { status: 'done', reason: 'turn ended', repor
 store.setSessionState(runA.id, 'done', 'turn ended: needs-decision');
 store.setTaskState(taskA.id, 'waiting-owner', 'step 1 investigate: needs-decision');
 store.createMessage({ task_id: taskA.id, direction: 'owner', text: 'One line, please.' });
+// A UI action's message: the raw A2UI action in meta_json (packages/ui server/actions.ts); task show gives it as meta.
+const uiAction = { name: 'answer', surfaceId: 'empty-state-choice', sourceComponentId: 'send', timestamp: '2026-11-01T18:20:00.000Z', context: { label: 'Short message' } };
+const actionMessage = store.createMessage({ task_id: taskA.id, direction: 'answer', text: 'Short message', meta_json: JSON.stringify(uiAction) });
 // The owner keeps Jev's placement but records his own (jv task override --keep), and the step's outcome is recorded.
 const kept = R.ownerPlacement({ store, taskId: taskA.id, stepId: stepA.id, model: 'claude-opus-5-5', effort: 'xhigh', mode: 'keep', keyReady: () => true });
 const outcome = recordOutcome(store, store.requireStep(stepA.id), 'blocked');
@@ -451,8 +454,13 @@ describe('the objects the lifted code produces parse', () => {
     const view = statusView(store, { markLost: false });
     accepts(C.StatusSchema, view);
     assert.ok(view.tasks.some((t) => t.id === taskA.id && t.question === 'Which empty state?'));
-    accepts(C.TaskShowSchema, taskView(store, store.requireTask(taskA.id)));
+    const shown = taskView(store, store.requireTask(taskA.id));
+    accepts(C.TaskShowSchema, shown);
     accepts(C.TaskShowSchema, taskView(store, store.requireTask(taskB.id)));
+    // meta only on the message that has meta_json, as the action object it holds.
+    assert.deepEqual(shown.messages.find((m) => m.id === actionMessage.id)?.meta, uiAction);
+    assert.ok(shown.messages.filter((m) => m.id !== actionMessage.id).every((m) => !('meta' in m)));
+    rejects(C.TaskShowSchema, { ...clone(shown), messages: shown.messages.map((m) => ({ ...m, meta: 'text' })) }, /meta/);
   });
 
   test('request ids: the auto form, the coordinator conversation, and the prefix', () => {

@@ -113,7 +113,7 @@ function RunRow({ run, task }: { run: RunView; task: TaskView }) {
           </span>
         )}
       </p>
-      {run.report && <ReportCard report={run.report} worktree={task.worktree} waitingOnOwner={task.state === 'waiting-owner' && run === latestRun(task)} title={`Report of ${run.id}`} />}
+      {run.report && <ReportCard report={run.report} worktree={task.worktree} waitingOnOwner={task.state === 'waiting-owner' && run === latestRun(task)} title={`Report of ${run.id}`} task={task} />}
     </div>
   );
 }
