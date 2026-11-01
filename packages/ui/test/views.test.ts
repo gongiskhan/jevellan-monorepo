@@ -1,25 +1,22 @@
-// jv ui (section 10): every page and endpoint over a fixture store in a temporary JV_HOME, the evidence route's
-// refusals, the read-only guarantees, the Host guard, the live stream, the Markdown renderer and the jv ui command.
-// No network beyond loopback, no model calls, no browser (the visual check is acceptance/viewer-check.mjs).
+// The lifted viewer's views (section 10 of the skills brief), now the read side of jv ui: overview, task, session,
+// decisions and usage built from the read-only store; the evidence helpers; the ReadOnlyStore guarantees; the
+// redaction of what is served; and the viewer's browser helpers (viewer/markdown.js, viewer/format.js), which stay in
+// the package. The HTTP routes of the server have their own suites (server, auth, routes, events).
 
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync } from 'node:fs';
-import { request } from 'node:http';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 import { FAKE_TOKEN, makeHome } from './fixtures/run-fixture.js';
 
-const home = makeHome('jv-ui-test-');
+const home = makeHome('jv-ui-views-test-');
 process.env.JV_HOME = home;
 const { openStore } = await import('jevellan-core/store');
-const { recordEvent } = await import('jevellan-core/events');
+const { defaultRedactor } = await import('jevellan-core/redact');
 const { UI_ROOT } = await import('../server/server.js');
-const { JvError } = await import('jevellan-core/errors');
-const { startUiServer, validateBind, hostAllowed } = await import('../server/server.js');
 const { ReadOnlyStore } = await import('../server/db.js');
-const { evidenceUrl, isoWeek, currentStep } = await import('../server/views.js');
+const { evidenceUrl, isoWeek, currentStep, overview, taskDetail, sessionPage, usage, decisions } = await import('../server/views.js');
 const { sniffImage, evidenceSegments } = await import('../server/evidence.js');
 const { buildUiFixture } = await import('./fixtures/ui-fixture.js');
 const markdown = (await import(pathToFileURL(join(UI_ROOT, 'viewer', 'markdown.js')).href)) as {
@@ -39,64 +36,22 @@ const format = (await import(pathToFileURL(join(UI_ROOT, 'viewer', 'format.js'))
 const store = openStore();
 const fx = buildUiFixture(store, home);
 const aliveIds = new Set(fx.alive);
-const ui = await startUiServer({ port: 0, pollMs: 100, alive: (s) => aliveIds.has(s.id) });
-const base = ui.url;
+const db = new ReadOnlyStore(store.file);
+const opts = { alive: (s: { id: string }) => aliveIds.has(s.id) };
 
-after(async () => {
-  await ui.close();
+after(() => {
+  db.close();
   store.close();
   rmSync(home, { recursive: true, force: true });
 });
 
-async function json<T = any>(path: string, status = 200): Promise<T> {
-  const r = await fetch(`${base}${path}`);
-  assert.equal(r.status, status, `${path} answered ${r.status}`);
-  assert.match(r.headers.get('content-type') ?? '', /application\/json/);
-  return (await r.json()) as T;
+/** A view as a client receives it: redacted, then through JSON. */
+function served<T = any>(value: unknown): T {
+  return JSON.parse(JSON.stringify(defaultRedactor().redactValue(value))) as T;
 }
-
-function raw(path: string, options: { method?: string; host?: string } = {}): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
-  const u = new URL(path, base);
-  return new Promise((resolve, reject) => {
-    const req = request(
-      { host: u.hostname, port: u.port, path: `${u.pathname}${u.search}`, method: options.method ?? 'GET', headers: options.host ? { Host: options.host } : {} },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
-      },
-    );
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-test('every page serves index.html with a strict content security policy', async () => {
-  for (const path of ['/', `/task/${fx.tasks.asked}`, `/session/${fx.sessions.verify}`, '/decisions', '/usage', '/decisions?kind=placement']) {
-    const r = await fetch(`${base}${path}`);
-    assert.equal(r.status, 200, path);
-    assert.match(r.headers.get('content-type') ?? '', /text\/html/);
-    const csp = r.headers.get('content-security-policy') ?? '';
-    assert.match(csp, /default-src 'none'/);
-    assert.match(csp, /script-src 'self'/);
-    assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/);
-    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
-    const body = await r.text();
-    assert.match(body, /<script type="module" src="\/ui\/app\.js"><\/script>/);
-  }
-  for (const [file, type] of [['app.js', /javascript/], ['app.css', /text\/css/], ['markdown.js', /javascript/], ['format.js', /javascript/], ['favicon.svg', /svg/]] as const) {
-    const r = await fetch(`${base}/ui/${file}`);
-    assert.equal(r.status, 200, file);
-    assert.match(r.headers.get('content-type') ?? '', type);
-    assert.equal(await r.text(), readFileSync(join(UI_ROOT, 'viewer', file), 'utf8'));
-  }
-  for (const path of ['/nope', '/ui/index.html.bak', '/ui/..%2Fpackage.json', '/ui/sub/app.js', '/task', '/api/nope']) {
-    assert.equal((await fetch(`${base}${path}`)).status, 404, path);
-  }
-});
 
 test('the first page groups tasks as section 10 lists them, with step, model, last event and the lost dot', async () => {
-  const d = await json('/api/overview');
+  const d = served(overview(db, opts));
   assert.equal(d.projects.length, 1);
   const p = d.projects[0];
   assert.equal(p.name, 'jevellan-live-sandbox');
@@ -125,7 +80,7 @@ test('the first page groups tasks as section 10 lists them, with step, model, la
 });
 
 test('the task page has the text, the steps with attempts, sessions, reports, decisions, landing and children', async () => {
-  const d = await json(`/api/task/${fx.tasks.asked}`);
+  const d = served(taskDetail(db, fx.tasks.asked, opts));
   assert.equal(d.task.id, fx.tasks.asked);
   assert.match(d.task.text, /No customers yet/);
   assert.deepEqual(d.steps.map((s: any) => [s.ordinal, s.duty, s.state]), [
@@ -178,19 +133,17 @@ test('the task page has the text, the steps with attempts, sessions, reports, de
   assert.deepEqual(d.children.map((c: any) => c.id), [fx.tasks.child]);
   assert.equal(d.messages.length, 1);
 
-  const child = await json(`/api/task/${fx.tasks.child}`);
+  const child = served(taskDetail(db, fx.tasks.child, opts));
   assert.equal(child.parent.id, fx.tasks.asked);
-  const queued = await json(`/api/task/${fx.tasks.queued}`);
+  const queued = served(taskDetail(db, fx.tasks.queued, opts));
   assert.equal(queued.after.id, fx.tasks.asked);
   assert.equal(queued.steps.length, 3);
 
-  await json('/api/task/T000000', 404);
-  const lowered = await json(`/api/task/${fx.tasks.asked.toLowerCase()}`);
-  assert.equal(lowered.task.id, fx.tasks.asked, 'ids typed in lower case are normalized');
+  assert.equal(taskDetail(db, 'T000000', opts), undefined);
 });
 
 test('the session page streams events oldest first, pages with after, and links report screenshots', async () => {
-  const d = await json(`/api/session/${fx.sessions.live}`);
+  const d = served(sessionPage(db, fx.sessions.live, 0, opts));
   assert.equal(d.session.runtime, 'claude-tmux');
   assert.equal(d.session.tmuxTarget, `jv-${fx.sessions.live}`);
   assert.equal(d.task.id, fx.tasks.running);
@@ -203,25 +156,25 @@ test('the session page streams events oldest first, pages with after, and links 
   );
   assert.equal(d.lastSeq, seqs.at(-1));
   assert.equal(d.more, false);
-  const later = await json(`/api/session/${fx.sessions.live}?after=${seqs.at(-3)}`);
+  const later = served(sessionPage(db, fx.sessions.live, seqs.at(-3), opts));
   assert.deepEqual(later.events.map((e: any) => e.seq), seqs.slice(-2));
 
-  const verify = await json(`/api/session/${fx.sessions.verify}`);
+  const verify = served(sessionPage(db, fx.sessions.verify, 0, opts));
   const report = verify.events.find((e: any) => e.kind === 'report');
   assert.equal(report.payload.screenshots[0].url, `/evidence/${fx.tasks.asked}/customers-empty-desktop.png`);
   assert.equal(report.payload.screenshots[2].url, null);
-  const lost = await json(`/api/session/${fx.sessions.lost}`);
+  const lost = served(sessionPage(db, fx.sessions.lost, 0, opts));
   assert.equal(lost.session.lost, true);
-  await json('/api/session/R000000', 404);
+  assert.equal(sessionPage(db, 'R000000', 0, opts), undefined);
 });
 
 test('decisions filter by kind and by date', async () => {
-  const all = await json('/api/decisions');
+  const all = served(decisions(db));
   assert.equal(all.total, 4);
   assert.deepEqual([...new Set(all.decisions.map((d: any) => d.kind))].sort(), ['landing', 'placement', 'workflow']);
   const newestFirst = all.decisions.map((d: any) => d.createdAt);
   assert.deepEqual(newestFirst, [...newestFirst].sort().reverse());
-  const placement = await json('/api/decisions?kind=placement');
+  const placement = served(decisions(db, { kind: 'placement' }));
   assert.equal(placement.total, 2);
   assert.ok(placement.decisions.every((d: any) => d.kind === 'placement' && d.task && d.step));
   assert.equal(placement.decisions.find((d: any) => d.id === fx.decisions.verify).task.title, 'Empty state on the customers page');
@@ -229,17 +182,17 @@ test('decisions filter by kind and by date', async () => {
   const today = new Date(created).toISOString().slice(0, 10);
   const tomorrow = new Date(created + 86_400_000).toISOString().slice(0, 10);
   const yesterday = new Date(created - 86_400_000).toISOString().slice(0, 10);
-  assert.equal((await json(`/api/decisions?from=${today}&to=${today}`)).total, 4);
-  assert.equal((await json(`/api/decisions?from=${tomorrow}`)).total, 0);
-  assert.equal((await json(`/api/decisions?to=${yesterday}`)).total, 0);
-  assert.equal((await json(`/api/decisions?kind=landing&from=${today}`)).decisions[0].id, fx.decisions.landing);
-  assert.equal((await json('/api/decisions?kind=bogus')).total, 4, 'an unknown kind is no filter');
-  assert.equal((await json(`/api/decisions?task=${fx.tasks.asked}`)).total, 4);
-  assert.equal((await json('/api/decisions?project=other')).total, 0);
+  assert.equal(decisions(db, { from: today, to: today }).total, 4);
+  assert.equal(decisions(db, { from: tomorrow }).total, 0);
+  assert.equal(decisions(db, { to: yesterday }).total, 0);
+  assert.equal(decisions(db, { kind: 'landing', from: today }).decisions[0]!.id, fx.decisions.landing);
+  assert.equal(decisions(db, { kind: 'bogus' }).total, 4, 'an unknown kind is no filter');
+  assert.equal(decisions(db, { task: fx.tasks.asked }).total, 4);
+  assert.equal(decisions(db, { project: 'other' }).total, 0);
 });
 
 test('usage rows are grouped by ISO week, newest week first, with session totals', async () => {
-  const d = await json('/api/usage');
+  const d = served(usage(db));
   assert.ok(d.weeks.length >= 2);
   assert.equal(d.weeks[0].week, isoWeek(Date.now()));
   const thisWeek = d.weeks[0];
@@ -256,35 +209,7 @@ test('usage rows are grouped by ISO week, newest week first, with session totals
   assert.equal(isoWeek('2027-01-01T00:00:00Z'), '2026-W53');
 });
 
-test('the evidence route serves only images under the task worktree .jv-evidence', async () => {
-  const ok = await raw(`/evidence/${fx.tasks.asked}/customers-empty-desktop.png`);
-  assert.equal(ok.status, 200);
-  assert.equal(ok.headers['content-type'], 'image/png');
-  assert.deepEqual(ok.body, readFileSync(join(fx.worktree, '.jv-evidence', 'customers-empty-desktop.png')));
-  const head = await raw(`/evidence/${fx.tasks.asked}/customers-empty-phone.png`, { method: 'HEAD' });
-  assert.equal(head.status, 200);
-  assert.equal(head.body.length, 0);
-  const refused = [
-    `/evidence/${fx.tasks.asked}/notes.png`,
-    `/evidence/${fx.tasks.asked}/link.png`,
-    `/evidence/${fx.tasks.asked}/..%2Foutside.png`,
-    `/evidence/${fx.tasks.asked}/%2e%2e/outside.png`,
-    `/evidence/${fx.tasks.asked}/..%2Fsecret.txt`,
-    `/evidence/${fx.tasks.asked}/missing.png`,
-    `/evidence/${fx.tasks.asked}/%2Fetc%2Fpasswd`,
-    `/evidence/${fx.tasks.asked}/customers-empty-desktop.png%00.txt`,
-    `/evidence/${fx.tasks.running}/customers-empty-desktop.png`,
-    '/evidence/T000000/customers-empty-desktop.png',
-    `/evidence/${fx.tasks.asked}/`,
-  ];
-  for (const path of refused) {
-    const r = await raw(path);
-    assert.equal(r.status, 404, path);
-    assert.doesNotMatch(r.body.toString('utf8'), /not for the viewer|jv-evidence|\/tmp\//, path);
-  }
-  // A raw ../ in the request line (fetch would normalize it) never leaves the folder either.
-  assert.equal((await raw(`/evidence/${fx.tasks.asked}/../outside.png`)).status, 404);
-
+test('evidence helpers: report screenshot URLs, plain path segments and image signatures', () => {
   assert.equal(evidenceUrl('T1', '/w', '.jv-evidence/a/b.png'), '/evidence/T1/a/b.png');
   assert.equal(evidenceUrl('T1', '/w', './.jv-evidence/a b.png'), '/evidence/T1/a%20b.png');
   assert.equal(evidenceUrl('T1', '/w', '/w/.jv-evidence/x.webp'), '/evidence/T1/x.webp');
@@ -300,76 +225,22 @@ test('the evidence route serves only images under the task worktree .jv-evidence
   assert.equal(sniffImage(Buffer.from('hello world, not an image')), undefined);
 });
 
-test('read only: no method but GET and HEAD, no write on the connection, lost rows are not marked', async () => {
-  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-    const r = await raw(`/api/task/${fx.tasks.asked}`, { method });
-    assert.equal(r.status, 405, method);
-    assert.equal(r.headers.allow, 'GET, HEAD');
-  }
+test('the read-only connection refuses writes, and the views show lost rows without marking them', () => {
   const reader = new ReadOnlyStore(store.file);
   assert.throws(() => reader.all("UPDATE tasks SET title = 'x'"), /readonly/);
   reader.close();
-  await json('/api/overview');
-  await json(`/api/session/${fx.sessions.lost}`);
-  assert.equal(store.getSession(fx.sessions.lost)!.state, 'running', 'the viewer shows the dot but never writes lost');
+  overview(db, opts);
+  sessionPage(db, fx.sessions.lost, 0, opts);
+  assert.equal(store.getSession(fx.sessions.lost)!.state, 'running', 'the views show the dot but never write lost');
   const missing = new ReadOnlyStore(join(home, 'no-store-here.sqlite'));
   assert.throws(() => missing.all('SELECT 1'), /no store yet/);
   assert.match(missing.dataVersion(), /^unavailable/);
 });
 
-test('the Host header must name this machine (DNS rebinding guard)', async () => {
-  const port = new URL(base).port;
-  assert.equal((await raw('/api/overview', { host: `evil.example:${port}` })).status, 403);
-  assert.equal((await raw('/', { host: 'evil.example' })).status, 403);
-  assert.equal((await raw('/api/overview', { host: `localhost:${port}` })).status, 200);
-  assert.equal((await raw('/api/overview', { host: `127.0.0.1:${port}` })).status, 200);
-  assert.equal(hostAllowed('dev-madrid.tail1234.ts.net:7071'), true);
-  assert.equal(hostAllowed('100.101.102.103:7071'), true);
-  assert.equal(hostAllowed('[::1]:7071'), true);
-  assert.equal(hostAllowed(undefined), false);
-  assert.equal(hostAllowed('attacker.example.com'), false);
-});
-
-test('--bind takes one IP address, never a wildcard', () => {
-  assert.equal(validateBind('localhost'), '127.0.0.1');
-  assert.equal(validateBind('100.101.102.103'), '100.101.102.103');
-  assert.equal(validateBind('[::1]'), '::1');
-  for (const bad of ['0.0.0.0', '::', 'example.com', '']) {
-    assert.throws(() => validateBind(bad), (e: unknown) => e instanceof JvError && e.exitCode === 2, bad);
-  }
-});
-
-test('the live stream says hello, then change after another connection writes', async () => {
-  const controller = new AbortController();
-  const r = await fetch(`${base}/api/live`, { signal: controller.signal });
-  assert.equal(r.status, 200);
-  assert.match(r.headers.get('content-type') ?? '', /text\/event-stream/);
-  const reader = r.body!.getReader();
-  const decoder = new TextDecoder();
-  let text = '';
-  const until = async (pattern: RegExp, ms: number): Promise<void> => {
-    const deadline = Date.now() + ms;
-    while (!pattern.test(text)) {
-      const left = deadline - Date.now();
-      if (left <= 0) throw new Error(`no ${pattern} in ${JSON.stringify(text)}`);
-      const chunk = await Promise.race([reader.read(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), left))]);
-      if (chunk.done) throw new Error('stream ended');
-      text += decoder.decode(chunk.value, { stream: true });
-    }
-  };
-  await until(/event: hello/, 2000);
-  assert.doesNotMatch(text, /event: change/);
-  recordEvent(store, fx.sessions.live, 'text', { text: 'one more line' });
-  await until(/event: change\ndata: \{"version":\d+,/, 3000);
-  controller.abort();
-  await reader.cancel().catch(() => undefined);
-});
-
-test('a secret that reached the store by mistake is masked in the JSON', async () => {
+test('a secret that reached the store by mistake is masked in what is served', () => {
   // Writers redact; this writes around them on purpose to check the viewer's own redaction.
   store.appendEvent(fx.sessions.investigate, 'text', { text: `leaked ${FAKE_TOKEN} here` });
-  const r = await fetch(`${base}/api/session/${fx.sessions.investigate}`);
-  const body = await r.text();
+  const body = JSON.stringify(served(sessionPage(db, fx.sessions.investigate, 0, opts)));
   assert.ok(!body.includes(FAKE_TOKEN));
   assert.match(body, /leaked \[redacted\] here/);
 });
@@ -436,22 +307,4 @@ test('currentStep: running or retrying first, then tasks.current_step, then the 
   assert.equal(currentStep({ current_step: 0 }, [s(1, 'done'), s(2, 'done')])!.id, 'S2');
   assert.equal(currentStep({ current_step: 3 }, [s(1, 'done'), s(2, 'done'), s(3, 'skipped')])!.id, 'S2');
   assert.equal(currentStep({ current_step: 0 }, []), undefined);
-});
-
-test('a missing store is a 503 until it appears; a store of another schema is refused at start', async () => {
-  const file = join(home, 'later.sqlite');
-  const waiting = await startUiServer({ port: 0, storeFile: file });
-  try {
-    const r = await fetch(`${waiting.url}/api/overview`);
-    assert.equal(r.status, 503);
-    assert.match(((await r.json()) as { error: string }).error, /no store yet/);
-    assert.equal((await fetch(`${waiting.url}/`)).status, 200, 'the page itself still loads and says so');
-  } finally {
-    await waiting.close();
-  }
-  const other = join(home, 'other-schema.sqlite');
-  const db = new DatabaseSync(other);
-  db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '0')");
-  db.close();
-  await assert.rejects(startUiServer({ port: 0, storeFile: other }), (e: unknown) => e instanceof JvError && e.exitCode === 2 && /schema version 0/.test(e.message));
 });
