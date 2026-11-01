@@ -350,6 +350,38 @@ test('transcript: entries in time order, tool results joined into their call, tu
   assert.equal(chat.coordinatorChat.message, chat.messageCoordinator);
 });
 
+test('transcript: a tool call that runs the installed jv by its path (as the coordinator prompt says) reads "ran jv ..."', async () => {
+  const { paths } = await import('../src/paths.js');
+  const shim = paths.shim;
+  const bash = (command: string, jv?: string) => chat.toolSummary('Bash', JSON.stringify({ command }), ...(jv !== undefined ? [jv] : []));
+  assert.equal(bash(`${shim} status --json --project shop`), 'ran jv status --json --project shop');
+  assert.equal(bash(`cd /tmp && ${shim} task show T3K9QD --json`), 'ran cd /tmp && jv task show T3K9QD --json');
+  assert.equal(bash(`"${shim}" report R1ABCDE`), 'ran "jv" report R1ABCDE');
+  assert.equal(bash(`${shim}`), 'ran jv');
+  // Only that exact path: a longer path, another jv, and arguments naming the path are left as they are.
+  assert.equal(bash(`${shim}x status`), `ran ${shim}x status`);
+  assert.equal(bash(`${shim}/x status`), `ran ${shim}/x status`);
+  assert.equal(bash('/opt/other/bin/jv status'), 'ran /opt/other/bin/jv status');
+  assert.equal(bash('/opt/jv/bin/jv status', '/opt/jv/bin/jv'), 'ran jv status');
+  assert.equal(chat.toolSummary('Read', JSON.stringify({ file_path: shim })), `Read ${shim}`);
+
+  const { project, file, msgDeps } = await started('transcript-shim');
+  const r = await chat.messageCoordinator(store, 'transcript-shim', 'status', msgDeps);
+  const t0 = Date.parse(r.typedAt);
+  const iso = (ms: number) => new Date(t0 + ms).toISOString();
+  writeFileSync(
+    file,
+    userLine('[owner]  status', iso(50)) +
+      toolLine('s1', 'tu1', 'Bash', { command: `${shim} status --json --project transcript-shim` }, { input_tokens: 1, output_tokens: 1 }, iso(1000)) +
+      resultLine('tu1', '{"tasks":[]}', iso(1500)) +
+      textLine('s2', 'Nothing runs.', { input_tokens: 1, output_tokens: 1 }, iso(2500)),
+  );
+  const view = chat.coordinatorTranscript(store, project.name, { refresh: true });
+  const tool = view.entries.find((e) => e.role === 'tool')!;
+  assert.equal(tool.text, 'ran jv status --json --project transcript-shim');
+  assert.equal(JSON.parse(tool.tool!.input).command, `${shim} status --json --project transcript-shim`, 'the full command stays in the input');
+});
+
 test('tail: an ended session is read to its end once and closed; the next coordinator is read on its own', async () => {
   const { project, session, file, tmux } = await started('tail-close');
   writeFileSync(file, textLine('e1', 'Bye.', { input_tokens: 1, output_tokens: 1 }));
