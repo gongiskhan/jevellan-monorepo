@@ -438,13 +438,26 @@ function AttachDialog({ task, close }: { task: TaskView; close(): void }) {
 
 type Dialog = 'message' | 'answer' | 'stop' | 'override' | 'changes' | 'attach';
 
+/** Runs that jv task resume continues: one the owner stopped, one the bot found lost, one the owner took over. */
+const RESUMABLE_RUNS = ['stopped', 'lost', 'waiting'];
+
+/**
+ * Whether Resume is offered, as core resumeTask takes it: never with a live run (it refuses "already running"), a
+ * done task or a discarded one (state stopped: "create a new task"); otherwise for a task waiting on the owner, a
+ * queued one, or one whose newest run was stopped (a Stop without discard keeps the task's state), lost or waiting.
+ */
+function canResume(task: TaskView): boolean {
+  if (liveRun(task) || task.state === 'done' || task.state === 'stopped') return false;
+  if (task.state === 'waiting-owner' || task.state === 'queued') return true;
+  return RESUMABLE_RUNS.includes(latestRun(task)?.state ?? '');
+}
+
 function ActionBar({ task, open }: { task: TaskView; open(dialog: Dialog): void }) {
   const live = liveRun(task);
   const latest = latestRun(task);
   const resume = useAction();
   const { notify } = useApp();
   const ended = ['done', 'failed'].includes(task.state);
-  const canResume = task.state === 'stopped' || task.state === 'waiting-owner' || latest?.state === 'lost' || latest?.state === 'waiting' || (task.state === 'queued' && !live);
   return (
     <div className="task-actions" role="toolbar" aria-label="Task actions">
       <button type="button" className="secondary" disabled={ended} onClick={() => open('message')}>
@@ -464,7 +477,7 @@ function ActionBar({ task, open }: { task: TaskView; open(dialog: Dialog): void 
       <button
         type="button"
         className="secondary"
-        disabled={!canResume || resume.busy}
+        disabled={!canResume(task) || resume.busy}
         onClick={() => void resume.run(() => resumeTask(task.id)).then((ok) => ok && notify('Resumed.'))}
       >
         <Icon name="play" size={15} />
