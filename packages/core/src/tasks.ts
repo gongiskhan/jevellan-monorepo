@@ -18,24 +18,46 @@
 // Everything from the worktree on is idempotent on the request id. A Jev refusal (any exit 2 from the router) leaves
 // the task queued and its step pending with the message as state_reason, wakes the coordinator, and exits 2 with
 // the message; jv task resume asks the workflow questions again if they were never answered and places the step.
+// Steps 6 and 7 are admitTask(), which reconcile's admission (the bot) runs for queued tasks too. Step 1 starts only
+// when a slot is free (limits.ts; advance.startStep checks it); otherwise the task stays queued with the reason
+// "waiting for a slot", exit 0, and the bot (or jv task resume) starts it later. `start: false` (the planner) leaves
+// the start to the bot from the beginning.
+//
+// Origin (schema 2): who created the task, `owner` by default, `coordinator` when JV_SESSION names a coordinator
+// session (the D-042 rule); the UI, MCP, scheduler, planner and improver pass their own (jv task create --origin,
+// internal). Checked against the store's TASK_ORIGIN_PATTERN before anything is written.
+//
+// Lost runs (the change to D-040 recorded with reconcile): recoverLostRun() is what the bot does with a lost run of
+// a task's current step: advanced by its report when it had one, a failure of the step after MAX_LOST_RESUMES lost
+// runs in a row, else continued the way jv task resume continues it (the same native session with "Continue.", or
+// the step placed again when the run never got a native session).
+//
+// jv task list: listTaskSummaries() and formatTaskList(), newest first, with origin; text times are local.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  advanceLostRun,
   continueRun,
   currentStep,
   defaultAdvanceDeps,
+  failRun,
   finishSteps,
   latestRun,
   liveRuns,
+  lostStreak,
+  MAX_LOST_RESUMES,
   startStep,
+  waitForSlot,
   wake,
   wakeLine,
+  writeAdmitAttempt,
   type AdvanceDeps,
   type StartStepResult,
 } from './advance.js';
 import { conflict, isJvError, notFound, refused } from './errors.js';
+import { slotRefusal } from './limits.js';
 import { createWorktree, type CreatedWorktree } from './git.js';
 import { ANSWERED_LEAVE_IT, askedLanding, closeAskedLandings, openVerifyLanding } from './land.js';
 import { normalizeId } from './ids.js';
@@ -65,8 +87,8 @@ import {
   type WorkflowAnswers,
   type WorkflowQuestionsInput,
 } from './route.js';
-import type { Store } from './store.js';
-import type { MessageDirection, MessageRow, OverrideMode, SessionRow, StepRow, TaskKind, TaskRow } from './types.js';
+import { TASK_ORIGIN_PATTERN, type Store } from './store.js';
+import { TASK_STATES, type MessageDirection, type MessageRow, type OverrideMode, type SessionRow, type StepRow, type TaskKind, type TaskRow, type TaskState } from './types.js';
 import { resolveWorkflow, stepVisible, workflowSteps, type ResolvedWorkflow } from './workflows.js';
 
 /** A login state recorded this recently is used as it is; an older one (or none) is probed first. */
@@ -121,7 +143,7 @@ function withDefaults(deps: Partial<TaskDeps> | undefined): TaskDeps {
 }
 
 function advanceDeps(d: TaskDeps): Partial<AdvanceDeps> {
-  return { placeStep: d.placeStep, spawn: d.spawn, notify: d.notify, land: d.land, closeWindows: d.closeWindows };
+  return { placeStep: d.placeStep, spawn: d.spawn, notify: d.notify, land: d.land, closeWindows: d.closeWindows, limits: d.limits, now: d.now };
 }
 
 function oneLine(text: string, max = 300): string {
@@ -147,6 +169,29 @@ export interface CreateTaskInput {
   after?: string;
   visible?: boolean;
   requestId?: string;
+  /**
+   * Who creates the task (schema 2): owner, coordinator, ui, mcp, schedule:<C>, planner:<J> or improver:<J>.
+   * Default: coordinator when JV_SESSION (of `env`) names a coordinator session, else owner. Not part of the
+   * request id: a repeat from another origin returns the task the first one created.
+   */
+  origin?: string;
+  /** The environment the caller runs in, for the default origin (default process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** false: create the task queued and leave its start to the bot's admission (reconcile). Default true. */
+  start?: boolean;
+}
+
+/** The reason of a task created with `start: false`. */
+export const QUEUED_FOR_THE_BOT = 'queued; the bot starts it when a slot is free';
+
+/** The origin a task gets: the given one (checked), else coordinator or owner by the caller's JV_SESSION. */
+export function taskOrigin(store: Store, origin: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  if (origin === undefined) return callerIsCoordinator(store, env) ? 'coordinator' : 'owner';
+  const value = origin.trim();
+  if (!TASK_ORIGIN_PATTERN.test(value)) {
+    throw refused(`--origin ${JSON.stringify(origin)} is not one of owner, coordinator, ui, mcp, schedule:<C id>, planner:<J id>, improver:<J id>`);
+  }
+  return value;
 }
 
 /** Text as stored: line endings normalized, trailing whitespace of the whole text removed. */
@@ -269,16 +314,90 @@ export async function ensureWorkflowAnswers(
   return { asked: true, ...(answers.decision ? { decisionId: answers.decision.id } : {}), skipped: answers.skip.map((s) => s.ordinal) };
 }
 
-/** A Jev refusal before a step could start: the task stays queued, the step pending with the message, a wake line. */
-async function jevRefused(store: Store, task: TaskRow, message: string, d: TaskDeps): Promise<never> {
+/**
+ * A Jev refusal before a step could start: the task stays queued, the step pending with the message, the refusal in
+ * meta admit_attempt:<T> (advance.ts: the bot retries it once a minute and does not wake again for it), a wake line.
+ */
+async function markJevRefused(store: Store, task: TaskRow, message: string, d: TaskDeps): Promise<void> {
   const step = currentStep(store, task.id);
   store.tx(() => {
     if (step && (step.state === 'pending' || step.state === 'retrying')) store.setStepState(step.id, step.state, message);
     store.setTaskState(task.id, 'queued', message);
+    writeAdmitAttempt(store, task.id, { at: new Date(d.now()).toISOString(), reason: message });
   });
   const now = store.requireTask(task.id);
   await wake(store, d, now, wakeLine(now, step?.duty, `not placed (${message})`, `jv task show ${task.id}`));
-  throw refused(`${message} (task ${task.id} is queued; jv task resume ${task.id} starts it once Jev answers)`, { taskId: task.id });
+}
+
+function queuedRefusal(taskId: string, reason: string) {
+  return refused(`${reason} (task ${taskId} is queued; jv task resume ${taskId} starts it once Jev answers)`, { taskId });
+}
+
+/** Whether the task's workflow needs a worktree (any duty that does not run on llm). */
+function needsWorktree(store: Store, taskId: string): boolean {
+  return store.listSteps(taskId).some((s) => !LLM_DUTIES.includes(s.duty));
+}
+
+export interface AdmitResult {
+  /**
+   * started: step 1 (or the current step) runs; waiting: --after names a task that is not done, or no slot is free
+   * (reason "waiting for a slot"); refused: Jev refused the workflow questions or the placement (the task stays
+   * queued with the message); failed: the run could not be spawned; finished: no step was left to run;
+   * skipped: the task cannot be started from here (not queued, or no worktree yet).
+   */
+  state: 'started' | 'waiting' | 'refused' | 'failed' | 'finished' | 'skipped';
+  reason?: string;
+  questions?: { decisionId?: string; skipped: number[] };
+  start?: StartStepResult;
+}
+
+/**
+ * Starts a queued task the way jv task create starts it (steps 6 and 7 of the header): the workflow questions once,
+ * the --after wait, then its current step, placed through route.ts and started through the runtime, in a free slot
+ * only. What reconcile's admission runs for every queued task, and createTask for a new one.
+ */
+export async function admitTask(store: Store, taskId: string, options: { reason: string; deps?: Partial<TaskDeps> }): Promise<AdmitResult> {
+  const d = withDefaults(options.deps);
+  const task = store.requireTask(taskId);
+  if (task.state !== 'queued') return { state: 'skipped', reason: `task ${task.id} is ${task.state}, not queued` };
+  // A worktree that could not be created is made by jv task create (the same request id); placing first would cost
+  // a Jev call that cannot start anything.
+  if (needsWorktree(store, task.id) && (!task.worktree_path || !task.base_commit)) {
+    return { state: 'skipped', reason: `task ${task.id} has no worktree yet; jv task create with its request id makes it` };
+  }
+  let questions: AdmitResult['questions'];
+  try {
+    const answered = await ensureWorkflowAnswers(store, task.id, d);
+    questions = { ...(answered.decisionId ? { decisionId: answered.decisionId } : {}), skipped: answered.skipped };
+  } catch (error) {
+    if (!isJvError(error) || error.exitCode !== 2) throw error;
+    await markJevRefused(store, store.requireTask(task.id), error.message, d);
+    return { state: 'refused', reason: error.message };
+  }
+  const withQuestions = (r: AdmitResult): AdmitResult => ({ ...r, ...(questions ? { questions } : {}) });
+  const after = task.after_task_id ? store.getTask(task.after_task_id) : undefined;
+  if (after && after.state !== 'done') {
+    const reason = `waiting for ${after.id} (${oneLine(after.title, 80)}) to finish`;
+    store.setTaskState(task.id, 'queued', reason);
+    return withQuestions({ state: 'waiting', reason });
+  }
+  if (!store.listSteps(task.id).some((s) => s.state === 'pending' || s.state === 'retrying')) {
+    await finishSteps(store, task.id, advanceDeps(d));
+    return withQuestions({ state: 'finished' });
+  }
+  const start = await startStep(store, task.id, { reason: options.reason, deps: advanceDeps(d) });
+  switch (start.state) {
+    case 'started':
+      return withQuestions({ state: 'started', start });
+    case 'refused':
+      return withQuestions({ state: 'refused', reason: start.reason, start });
+    case 'failed':
+      return withQuestions({ state: 'failed', reason: start.reason, start });
+    case 'waiting':
+      return withQuestions({ state: 'waiting', reason: start.reason, start });
+    case 'none':
+      return withQuestions({ state: 'finished', reason: start.reason, start });
+  }
 }
 
 export async function createTask(store: Store, input: CreateTaskInput, deps: Partial<TaskDeps> = {}): Promise<CreateTaskResult> {
@@ -293,6 +412,7 @@ export async function createTask(store: Store, input: CreateTaskInput, deps: Par
   if (parent && parent.project_id !== project.id) throw refused(`the parent ${parent.id} belongs to another project`);
   if (after && after.project_id !== project.id) throw refused(`the task ${after.id} (--after) belongs to another project`);
   if (parent && !parent.branch) throw refused(`the parent ${parent.id} has no branch to start from`);
+  const origin = taskOrigin(store, input.origin, input.env);
 
   const resolved: ResolvedWorkflow = resolveWorkflow({ project: project.name, kind: input.kind, ...(input.duty !== undefined ? { duty: input.duty } : {}) });
   const kind = input.kind as TaskKind;
@@ -327,7 +447,9 @@ export async function createTask(store: Store, input: CreateTaskInput, deps: Par
       workflow_json: workflowJson,
       visible,
       state: 'queued',
-      state_reason: 'created',
+      state_reason:
+        input.start !== false ? 'created' : after && after.state !== 'done' ? `waiting for ${after.id} (${oneLine(after.title, 80)}) to finish` : QUEUED_FOR_THE_BOT,
+      origin,
     });
     for (const s of workflowSteps(t.row.id, resolved.workflow)) store.createStep(s);
     return { task: t.row, isNew: t.created };
@@ -365,31 +487,13 @@ export async function createTask(store: Store, input: CreateTaskInput, deps: Par
     warnings,
   });
 
-  // A repeat of a task that already started (or ended) does nothing more.
+  // A repeat of a task that already started (or ended) does nothing more; nor does a task left to the bot.
   if (store.listSessions({ task_id: task.id, kind: 'step' }).length || !['queued'].includes(task.state)) return result();
+  if (input.start === false) return result();
 
-  let questions: CreateTaskResult['questions'];
-  try {
-    const answered = await ensureWorkflowAnswers(store, task.id, d);
-    questions = { ...(answered.decisionId ? { decisionId: answered.decisionId } : {}), skipped: answered.skipped };
-  } catch (error) {
-    if (isJvError(error) && error.exitCode === 2) return jevRefused(store, store.requireTask(task.id), error.message, d);
-    throw error;
-  }
-
-  if (after && store.requireTask(after.id).state !== 'done') {
-    store.setTaskState(task.id, 'queued', `waiting for ${after.id} (${oneLine(after.title, 80)}) to finish`);
-    return result(undefined, questions);
-  }
-  if (!store.listSteps(task.id).some((s) => s.state === 'pending' || s.state === 'retrying')) {
-    await finishSteps(store, task.id, advanceDeps(d));
-    return result(undefined, questions);
-  }
-  const start = await startStep(store, task.id, { reason: 'task created', deps: advanceDeps(d) });
-  if (start.state === 'refused') {
-    throw refused(`${start.reason} (task ${task.id} is queued; jv task resume ${task.id} starts it once Jev answers)`, { taskId: task.id });
-  }
-  return result(start, questions);
+  const admitted = await admitTask(store, task.id, { reason: 'task created', deps: d });
+  if (admitted.state === 'refused') throw queuedRefusal(task.id, admitted.reason ?? 'Jev refused');
+  return result(admitted.start, admitted.questions);
 }
 
 // ---- jv task show -----------------------------------------------------------------------------------------------
@@ -434,6 +538,8 @@ export interface TaskView {
   text: string;
   state: string;
   stateReason: string;
+  /** Who created the task (schema 2). */
+  origin: string;
   currentStep: number;
   branch: string | null;
   worktree: string | null;
@@ -495,6 +601,7 @@ export function taskView(store: Store, task: TaskRow): TaskView {
     text: task.task_text,
     state: task.state,
     stateReason: task.state_reason,
+    origin: task.origin ?? 'owner',
     currentStep: task.current_step,
     branch: task.branch,
     worktree: task.worktree_path,
@@ -551,7 +658,7 @@ export function taskView(store: Store, task: TaskRow): TaskView {
 export function formatTaskView(v: TaskView): string {
   const lines = [
     `Task ${v.id}: ${v.title}`,
-    `Project ${v.project}. Kind ${v.kind}${v.workflow.source && v.workflow.source !== 'single' ? ` (workflow ${v.workflow.source})` : ''}. ${v.visible ? 'Visible. ' : ''}State ${v.state}: ${v.stateReason}`,
+    `Project ${v.project}. Kind ${v.kind}${v.workflow.source && v.workflow.source !== 'single' ? ` (workflow ${v.workflow.source})` : ''}. ${v.origin !== 'owner' ? `Origin ${v.origin}. ` : ''}${v.visible ? 'Visible. ' : ''}State ${v.state}: ${v.stateReason}`,
   ];
   if (v.branch) lines.push(`Branch ${v.branch}${v.worktree ? ` in ${v.worktree}` : ''}${v.landedCommit ? `, landed as ${v.landedCommit.slice(0, 12)}` : ''}`);
   if (v.parent) lines.push(`Parent ${v.parent}`);
@@ -794,7 +901,8 @@ async function endTakeover(store: Store, run: SessionRow, d: TaskDeps): Promise<
 /**
  * Continues a task: asks the workflow questions when they were never answered, then resumes the current step's
  * latest run natively when it has a native session (a new run row with the same native_session_id: J7, J6), else
- * places and starts the step (J9). A task whose steps are all done goes to landing.
+ * places and starts the step (J9). A task whose steps are all done goes to landing. A queued task starts only in a
+ * free slot (it stays queued with "waiting for a slot" otherwise).
  */
 export async function resumeTask(store: Store, id: string, deps: Partial<TaskDeps> = {}): Promise<ResumeResult> {
   const d = withDefaults(deps);
@@ -808,7 +916,10 @@ export async function resumeTask(store: Store, id: string, deps: Partial<TaskDep
   try {
     await ensureWorkflowAnswers(store, task.id, d);
   } catch (error) {
-    if (isJvError(error) && error.exitCode === 2) return jevRefused(store, task, error.message, d);
+    if (isJvError(error) && error.exitCode === 2) {
+      await markJevRefused(store, task, error.message, d);
+      throw queuedRefusal(task.id, error.message);
+    }
     throw error;
   }
   task = store.requireTask(task.id);
@@ -825,24 +936,36 @@ export async function resumeTask(store: Store, id: string, deps: Partial<TaskDep
     const after = await finishSteps(store, task.id, advanceDeps(d));
     return { task: after, how: after.state === 'done' ? 'done' : 'landing' };
   }
+  // Started from queued (a native resume included): only in a free slot.
+  if (task.state === 'queued' && slotRefusal(store, task.project_id, task.id, d.limits())) {
+    const { reason } = waitForSlot(store, task.id);
+    return { task: store.requireTask(task.id), how: 'waiting', reason };
+  }
+  const r = await continueStep(store, task, step, d, 'the owner');
+  if (r.start?.state === 'refused') throw queuedRefusal(task.id, r.start.reason);
+  return r;
+}
+
+/**
+ * The current step's latest run continued natively (resumable state and a native session: a new run with
+ * "Continue."), else the step placed and started again. `by` names who resumes it in the state reasons.
+ */
+async function continueStep(store: Store, task: TaskRow, step: StepRow, d: TaskDeps, by: string): Promise<ResumeResult> {
   const last = latestRun(store, task.id, step.id);
   if (last?.native_session_id && RESUMABLE_RUN_STATES.includes(last.state)) {
     if (last.state === 'waiting') store.setSessionState(last.id, 'done', await endTakeover(store, last, d));
-    if (step.state === 'failed' || step.state === 'pending') store.setStepState(step.id, 'running', `resumed by the owner (${last.id})`);
+    if (step.state === 'failed' || step.state === 'pending') store.setStepState(step.id, 'running', `resumed by ${by} (${last.id})`);
     const run = continueRun(store, store.requireSession(last.id), {
       requestId: `resume:${last.id}`,
       message: CONTINUE_PROMPT,
       reason: `resumes ${last.id} (${last.state})`,
-      taskReason: `step ${step.ordinal} (${step.duty}) resumed by the owner`,
+      taskReason: `step ${step.ordinal} (${step.duty}) resumed by ${by}`,
       deps: advanceDeps(d),
     });
     return { task: store.requireTask(task.id), how: 'native', session: run.id };
   }
-  if (step.state === 'failed' || step.state === 'running') store.setStepState(step.id, 'pending', 'resumed by the owner; placing it again');
-  const start = await startStep(store, task.id, { stepId: step.id, reason: 'resumed by the owner', deps: advanceDeps(d) });
-  if (start.state === 'refused') {
-    throw refused(`${start.reason} (task ${task.id} is queued; jv task resume ${task.id} starts it once Jev answers)`, { taskId: task.id });
-  }
+  if (step.state === 'failed' || step.state === 'running') store.setStepState(step.id, 'pending', `resumed by ${by}; placing it again`);
+  const start = await startStep(store, task.id, { stepId: step.id, reason: `resumed by ${by}`, deps: advanceDeps(d) });
   return {
     task: store.requireTask(task.id),
     how: start.state === 'started' ? 'placed' : start.state === 'waiting' ? 'waiting' : 'refused',
@@ -850,6 +973,60 @@ export async function resumeTask(store: Store, id: string, deps: Partial<TaskDep
     ...('reason' in start ? { reason: start.reason } : {}),
     start,
   };
+}
+
+// ---- lost runs (reconcile) ----------------------------------------------------------------------------------------
+
+export interface LostRecovery {
+  /** The lost run. */
+  session: string;
+  task: string | null;
+  /**
+   * advanced: it had reported, and the task advanced by the report; resumed: a new run continues its native
+   * session; placed: the step was placed and started again (the run had no native session); refused: Jev refused
+   * that placement (the task is queued with the message; reconcile's admission retries it); failed: lost too often
+   * in a row, the step's failure rule applied; skipped: nothing to do (see reason).
+   */
+  action: 'advanced' | 'resumed' | 'placed' | 'refused' | 'failed' | 'skipped';
+  /** The run that continues the work (resumed, placed). */
+  run?: string;
+  reason?: string;
+}
+
+/**
+ * What the bot does with a lost run (reconcile step 1; amends D-040, under which only jv task resume continued
+ * one). Only the newest run of a task's current step is looked at, and only while the task is neither queued nor
+ * ended and has no live run. Never slot-limited: the task was running when its run was lost.
+ */
+export async function recoverLostRun(store: Store, sessionId: string, deps: Partial<TaskDeps> = {}): Promise<LostRecovery> {
+  const d = withDefaults(deps);
+  const run = store.requireSession(sessionId);
+  const skip = (reason: string): LostRecovery => ({ session: run.id, task: run.task_id, action: 'skipped', reason });
+  if (run.kind !== 'step' || !run.task_id || !run.step_id) return skip('not a step run');
+  if (run.state !== 'lost') return skip(`the run is ${run.state}`);
+  const task = store.requireTask(run.task_id);
+  if (['queued', 'done', 'failed', 'stopped'].includes(task.state)) return skip(`task ${task.id} is ${task.state}`);
+  const step = store.requireStep(run.step_id);
+  if (currentStep(store, task.id)?.id !== step.id) return skip(`step ${step.ordinal} is not the task's current step`);
+  if (latestRun(store, task.id, step.id)?.id !== run.id) return skip('a later run of the step continued it');
+  const live = liveRuns(store, task.id);
+  if (live.length) return skip(`task ${task.id} has a live run (${live.map((s) => s.id).join(', ')})`);
+
+  const base = { session: run.id, task: task.id };
+  if (store.getReportBySession(run.id)) {
+    await advanceLostRun(store, run.id, advanceDeps(d));
+    return { ...base, action: 'advanced', reason: `the run had reported ${store.getReportBySession(run.id)!.status}` };
+  }
+  const streak = lostStreak(store, step.id);
+  if (streak > MAX_LOST_RESUMES) {
+    const reason = `run ${run.id} was lost ${streak} times in a row (${run.state_reason})`;
+    await failRun(store, run.id, reason, advanceDeps(d));
+    return { ...base, action: 'failed', reason };
+  }
+  const r = await continueStep(store, task, step, d, `the bot after ${run.id} was lost`);
+  if (r.how === 'native') return { ...base, action: 'resumed', ...(r.session ? { run: r.session } : {}) };
+  if (r.how === 'placed') return { ...base, action: 'placed', ...(r.session ? { run: r.session } : {}) };
+  return { ...base, action: r.start?.state === 'refused' ? 'refused' : 'skipped', ...(r.reason ? { reason: r.reason } : {}) };
 }
 
 // ---- jv task override -------------------------------------------------------------------------------------------
@@ -914,4 +1091,134 @@ export async function overrideTask(store: Store, id: string, input: OverrideInpu
     deps: advanceDeps(d),
   });
   return { ...base, ...(live ? { stopped: live.id } : {}), ...(start.state === 'started' ? { session: start.session.id } : {}), start };
+}
+
+// ---- jv task list -----------------------------------------------------------------------------------------------
+
+export const TASK_LIST_DEFAULT_LIMIT = 50;
+export const TASK_LIST_MAX_LIMIT = 1000;
+/** No text line of jv task list is wider than this (AGENTS.md: no tables wider than 100 characters). */
+export const LIST_LINE_MAX = 100;
+
+export interface TaskListFilter {
+  /** A project name or id. */
+  project?: string;
+  state?: string;
+  origin?: string;
+  /** At most this many tasks, newest first (default 50, at most 1000). */
+  limit?: number;
+}
+
+export interface TaskSummary {
+  id: string;
+  project: string;
+  title: string;
+  kind: string;
+  state: TaskState;
+  stateReason: string;
+  origin: string;
+  /** The step the task works on now (or the last one), as jv status picks it. */
+  step: { ordinal: number; duty: string; state: string; of: number } | null;
+  /** The task's newest step run. */
+  run: { id: string; runtime: string; provider: string; model: string; effort: string; state: string; lastEventAt: string | null } | null;
+  lost: boolean;
+  parent: string | null;
+  after: string | null;
+  branch: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  /** The newest of the run's last event, the task's end, start and creation. */
+  updatedAt: string;
+}
+
+/** The tasks of every project (or one), newest first, with origin. Exit 2 for an unknown state or a bad limit. */
+export function listTaskSummaries(store: Store, filter: TaskListFilter = {}): TaskSummary[] {
+  if (filter.state !== undefined && !(TASK_STATES as readonly string[]).includes(filter.state)) {
+    throw refused(`--state ${JSON.stringify(filter.state)} is not one of ${TASK_STATES.join(', ')}`);
+  }
+  const limit = filter.limit ?? TASK_LIST_DEFAULT_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > TASK_LIST_MAX_LIMIT) throw refused(`--limit must be a whole number from 1 to ${TASK_LIST_MAX_LIMIT}`);
+  const project = filter.project !== undefined ? store.requireProject(filter.project) : undefined;
+  const names = new Map(store.listProjects().map((p) => [p.id, p.name]));
+  const rows = store
+    .listTasks({
+      ...(project ? { project_id: project.id } : {}),
+      ...(filter.state !== undefined ? { states: [filter.state as TaskState] } : {}),
+      ...(filter.origin !== undefined ? { origin: filter.origin } : {}),
+    })
+    .reverse()
+    .slice(0, limit);
+  return rows.map((t) => taskSummary(store, t, names.get(t.project_id) ?? t.project_id));
+}
+
+function taskSummary(store: Store, task: TaskRow, projectName: string): TaskSummary {
+  const steps = store.listSteps(task.id);
+  const step =
+    (task.current_step > 0 ? steps.find((s) => s.ordinal === task.current_step) : undefined) ??
+    steps.find((s) => s.state !== 'done' && s.state !== 'skipped') ??
+    steps.at(-1);
+  const run = store.listSessions({ task_id: task.id, kind: 'step' }).at(-1);
+  const times = [run?.last_event_at, task.ended_at, task.started_at, task.created_at].filter((t): t is string => typeof t === 'string');
+  return {
+    id: task.id,
+    project: projectName,
+    title: task.title,
+    kind: task.kind,
+    state: task.state,
+    stateReason: task.state_reason,
+    origin: task.origin ?? 'owner',
+    step: step ? { ordinal: step.ordinal, duty: step.duty, state: step.state, of: steps.length } : null,
+    run: run
+      ? { id: run.id, runtime: run.runtime, provider: run.provider, model: run.model, effort: run.effort, state: run.state, lastEventAt: run.last_event_at }
+      : null,
+    lost: run?.state === 'lost',
+    parent: task.parent_task_id,
+    after: task.after_task_id,
+    branch: task.branch,
+    createdAt: task.created_at,
+    startedAt: task.started_at,
+    endedAt: task.ended_at,
+    updatedAt: times.reduce((a, b) => (b > a ? b : a)),
+  };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** A time for people: local HH:MM, with the local date (YYYY-MM-DD) in front when it is not today. */
+export function localStamp(iso: string, now: number = Date.now()): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return iso;
+  const today = new Date(now);
+  const clock = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
+  const sameDay = t.getFullYear() === today.getFullYear() && t.getMonth() === today.getMonth() && t.getDate() === today.getDate();
+  return sameDay ? clock : `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())} ${clock}`;
+}
+
+function cutLine(line: string, max = LIST_LINE_MAX): string {
+  const chars = [...line];
+  return chars.length > max ? `${chars.slice(0, max - 3).join('')}...` : line;
+}
+
+/**
+ * One line per task, ids first, at most 100 characters (a longer title is cut): id, state, origin, created (local
+ * time), step, project (left out when the list is of one project) and title. Columns are as wide as their widest
+ * value in the list.
+ */
+export function formatTaskList(tasks: readonly TaskSummary[], options: { now?: number; showProject?: boolean } = {}): string {
+  if (!tasks.length) return 'No tasks.';
+  const now = options.now ?? Date.now();
+  const showProject = options.showProject ?? true;
+  const rows = tasks.map((t) => [
+    t.id,
+    t.state,
+    t.origin,
+    localStamp(t.createdAt, now),
+    `${t.step ? `${t.step.ordinal}/${t.step.of} ${t.step.duty}` : '-'}${t.lost ? ' LOST' : ''}`,
+    ...(showProject ? [t.project] : []),
+  ]);
+  const widths = rows[0]!.map((_, c) => Math.max(...rows.map((r) => [...r[c]!].length)));
+  return rows
+    .map((r, i) => cutLine([...r.map((v, c) => v.padEnd(widths[c]!)), oneLine(tasks[i]!.title, 120)].join('  ')))
+    .join('\n');
 }

@@ -2,7 +2,7 @@
 // are ended by hand (state, report) and afterRun is awaited. No process, no model, no network.
 
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 import { makeHome, writeSkill } from './fixtures/run-fixture.js';
@@ -20,6 +20,9 @@ type AdvanceDeps = import('../src/advance.js').AdvanceDeps;
 type ReportInput = import('../src/report.js').ReportInput;
 type Workflow = import('../src/workflows.js').Workflow;
 
+// Runs of these tests stay queued (the spawn is a recording fake), so every task would keep its slot: the limits
+// are made wide here, and the slot rule has its own test below with tight ones.
+writeFileSync(join(home, 'bot.json'), JSON.stringify({ limits: { perProject: 1000, total: 1000 } }));
 writeSkill(home, 'verify', ['repo-write', 'shell', 'browser'], 'Verify.');
 writeSkill(home, 'document', ['repo-write'], 'Document.');
 writeSkill(home, 'answer', [], 'Answer.');
@@ -365,4 +368,99 @@ test('the extra verify step of verify-then-land goes back to landing when it end
   assert.deepEqual(landed, [{ task: task.id, auto: true }], 'landing decides, not on_fail');
   assert.equal(stepOf(task.id, 2).state, 'failed');
   assert.equal(placed.length, 1, 'no retry was placed');
+});
+
+// ---- slots, admission refusals, lost runs (reconcile; M-numbers of phase 1) ----------------------------------------
+
+const { slotUse, WAITING_FOR_A_SLOT } = await import('../src/limits.js');
+const SINGLE: Workflow = { name: 'single', steps: [{ duty: 'implement', when: 'always', instructions: '' }] };
+/** Limits with exactly `free` slots left in the project (the earlier tests' runs stay queued and hold theirs). */
+const tight = (free: number) => {
+  const used = slotUse(store).byProject[project.id] ?? 0;
+  return { ...deps, limits: () => ({ perProject: used + free, total: 1000 }) };
+};
+
+test('a queued task starts only in a free slot: no Jev call, the exact reason, and a task that runs is never held back', async () => {
+  const running = newTask(FEATURE);
+  store.setStepState(stepOf(running.id, 1).id, 'skipped', 'Jev: not needed');
+  assert.equal((await A.startStep(store, running.id, { reason: 'go', deps })).state, 'started');
+  const full = tight(0);
+
+  const queued = newTask(SINGLE, { kind: 'single' });
+  const r = await A.startStep(store, queued.id, { reason: 'task created', deps: full });
+  assert.deepEqual(r, { state: 'waiting', reason: WAITING_FOR_A_SLOT });
+  assert.equal(placed.length, 1, 'no placement was asked for the waiting task');
+  assert.equal(store.requireTask(queued.id).state, 'queued');
+  assert.equal(store.requireTask(queued.id).state_reason, 'waiting for a slot');
+  assert.equal(store.listSessions({ task_id: queued.id }).length, 0);
+
+  // The running task's next step starts although no slot is free: it already holds one.
+  await endRun(lastRun(running.id).id, { status: 'done', summary: 'Implemented.' });
+  assert.equal(store.requireStep(lastRun(running.id).step_id!).duty, 'verify');
+  assert.equal(store.requireTask(running.id).state, 'running');
+
+  // The owner's own placement (jv task override --undo) is not held back either.
+  const decision = store.createDecision({
+    kind: 'placement', project_id: project.id, task_id: queued.id, step_id: stepOf(queued.id, 1).id, skill_name: 'jevellan-router',
+    skill_hash: 'hash', jev_model: 'none', state_json: '{}', questions_json: '{}', answers_json: '{}', chosen_json: '{"source":"owner"}',
+    latency_ms: 0, usage_json: '{}',
+  });
+  const owner = await A.startStep(store, queued.id, {
+    reason: 'owner override',
+    owner: { runtime: 'claude-sdk', provider: 'claude-main', model: 'model-small', effort: 'low', decisionId: decision.id },
+    deps: full,
+  });
+  assert.equal(owner.state, 'started');
+});
+
+test('the slot is checked again in the transaction that creates the run: two starts racing for one slot start one', async () => {
+  const a = newTask(SINGLE, { kind: 'single' });
+  const b = newTask(SINGLE, { kind: 'single' });
+  const one = tight(1);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow = { ...one, placeStep: async (input: PlaceStepInput) => { await gate; return deps.placeStep!(input); } };
+  const both = Promise.all([A.startStep(store, a.id, { reason: 'go', deps: slow }), A.startStep(store, b.id, { reason: 'go', deps: slow })]);
+  release();
+  const [ra, rb] = await both;
+  assert.deepEqual([ra.state, rb.state].sort(), ['started', 'waiting']);
+  const waiting = ra.state === 'waiting' ? a : b;
+  assert.equal(store.requireTask(waiting.id).state_reason, WAITING_FOR_A_SLOT);
+  assert.equal(store.listSessions({ task_id: waiting.id }).length, 0);
+});
+
+test('a Jev refusal is recorded in meta admit_attempt:<T>, and the next start that goes through clears it', async () => {
+  const task = newTask(SINGLE, { kind: 'single' });
+  refuseJev = true;
+  const clock = { ...deps, now: () => Date.parse('2026-11-01T10:00:00.000Z') };
+  assert.equal((await A.startStep(store, task.id, { reason: 'go', deps: clock })).state, 'refused');
+  assert.deepEqual(A.readAdmitAttempt(store, task.id), { at: '2026-11-01T10:00:00.000Z', reason: 'Jev: no key configured' });
+  refuseJev = false;
+  assert.equal((await A.startStep(store, task.id, { reason: 'go', deps: clock })).state, 'started');
+  assert.equal(A.readAdmitAttempt(store, task.id)?.reason, null);
+});
+
+test('a lost run that had reported advances by its report; lostStreak counts the lost runs in a row; failRun applies on_fail', async () => {
+  const task = newTask({ name: 'bug', steps: FEATURE.steps.slice(1, 3) }, { kind: 'bug' });
+  await A.startStep(store, task.id, { reason: 'go', deps });
+  const run = lastRun(task.id);
+  store.setSessionState(run.id, 'running', 'fake turn', { native_session_id: 'native-lost-report' });
+  writeReport(store, run.id, { status: 'done', summary: 'Implemented before the process died.' });
+  store.setSessionState(run.id, 'lost', 'process 1 ended without an end event');
+  await A.afterRun(store, run.id, deps);
+  assert.equal(lastRun(task.id).id, run.id, 'afterRun leaves a lost run alone');
+  await A.advanceLostRun(store, run.id, deps);
+  assert.equal(stepOf(task.id, 1).state, 'done');
+  const verify = lastRun(task.id);
+  assert.equal(store.requireStep(verify.step_id!).duty, 'verify');
+
+  assert.equal(A.lostStreak(store, verify.step_id!), 0);
+  store.setSessionState(verify.id, 'lost', 'gone');
+  assert.equal(A.lostStreak(store, verify.step_id!), 1);
+  await A.failRun(store, verify.id, `run ${verify.id} was lost 4 times in a row`, deps);
+  // verify's on_fail goes back to implement.
+  assert.equal(stepOf(task.id, 1).state, 'retrying');
+  assert.equal(stepOf(task.id, 1).attempts, 2);
+  assert.match(placed.at(-1)!.failure ?? '', /lost 4 times in a row/);
+  assert.equal(store.requireStep(lastRun(task.id).step_id!).duty, 'implement');
 });
