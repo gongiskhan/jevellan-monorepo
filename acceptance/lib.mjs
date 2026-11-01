@@ -17,6 +17,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -764,4 +765,116 @@ export function loadPlaywright() {
 /** file:// URL of a path, for dynamic imports of build output. */
 export function fileUrl(path) {
   return pathToFileURL(path).href;
+}
+
+// ---- a temporary home with the real providers (M4 to M17) --------------------------------------------------------
+
+/**
+ * ~/.jv/providers.json for a temporary home: ~/.jv paths kept (they map onto JV_HOME), every codex-subscription
+ * provider disabled. Each copy of the member's Codex login shares one refresh token (D-022), so a throwaway home must
+ * never refresh it.
+ */
+export function providersForTempHome() {
+  const text = readFileSync(join(REAL_JV_HOME, 'providers.json'), 'utf8').split(`${REAL_JV_HOME}/`).join('~/.jv/');
+  const cfg = JSON.parse(text);
+  const disabled = [];
+  for (const p of cfg.providers ?? []) {
+    if (p.kind === 'codex-subscription' && p.enabled !== false) {
+      p.enabled = false;
+      disabled.push(p.name);
+    }
+  }
+  return { cfg, disabled, codex: (cfg.providers ?? []).filter((p) => p.kind === 'codex-subscription').map((p) => p.name) };
+}
+
+/** Copies the real home's providers.json (Codex disabled), secrets (mode 600) and seeds.json into `home`. */
+export function seedTempHome(home) {
+  const providers = providersForTempHome();
+  writeFileSync(join(home, 'providers.json'), `${JSON.stringify(providers.cfg, null, 2)}\n`, { mode: 0o600 });
+  const secretsDir = join(home, 'secrets');
+  mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+  chmodSync(secretsDir, 0o700);
+  const copied = [];
+  for (const f of secretFiles(join(REAL_JV_HOME, 'secrets'))) {
+    const to = join(secretsDir, basename(f));
+    if (!existsSync(to)) copyFileSync(f, to);
+    chmodSync(to, 0o600);
+    copied.push(basename(f));
+  }
+  let seeds = [];
+  const seedsFile = join(REAL_JV_HOME, 'seeds.json');
+  if (existsSync(seedsFile)) {
+    const all = JSON.parse(readFileSync(seedsFile, 'utf8'));
+    const kept = Object.fromEntries(Object.entries(all).filter(([name]) => !providers.codex.includes(name)));
+    writeFileSync(join(home, 'seeds.json'), `${JSON.stringify(kept, null, 2)}\n`, { mode: 0o600 });
+    seeds = Object.keys(kept);
+  }
+  return { secrets: copied, seeds, disabled: providers.disabled };
+}
+
+/** M-004's project.json settings of the sandbox and its clone. */
+export const SANDBOX_SETTINGS = Object.freeze({ testCommand: 'TZ=UTC SANDBOX_DATA_DIR=.sandbox-data npm test', devCommand: 'npm start', pushAfterLanding: false });
+
+/** Registers a project in `home` and applies `settings` to its project.json; returns its name and path. */
+export function registerProject(home, path, name, settings = SANDBOX_SETTINGS) {
+  const r = jvJson(['project', 'add', path, '--name', name], { home });
+  if (r.code !== 0) throw new Error(`jv project add ${name}: ${r.stderr || r.stdout}`);
+  const file = join(home, 'projects', name, 'project.json');
+  const cfg = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, `${JSON.stringify({ ...cfg, ...settings }, null, 2)}\n`, { mode: 0o600 });
+  return { name, path };
+}
+
+/**
+ * A temporary JV_HOME with the real providers and Jev: seeded from ~/.jv (seedTempHome), bootstrapped with this
+ * checkout and the skills checkout, and with `projects` registered ([path, name] pairs, M-004's settings). Returns
+ * the home and what was seeded.
+ */
+export function realJvHome(id, { projects = [[SANDBOX, SANDBOX_NAME]], name = 'home' } = {}) {
+  const home = tempHome(id, name);
+  const seeded = seedTempHome(home);
+  const b = jvJson(['bootstrap', '--skills', SKILLS_REPO], { home, timeoutMs: 300_000 });
+  if (b.code !== 0) throw new Error(`jv bootstrap: ${b.stderr || b.stdout}`);
+  const registered = projects.map(([path, projectName]) => registerProject(home, path, projectName));
+  return { home, seeded, projects: registered };
+}
+
+/**
+ * Removes the git worktrees of `repo` that lie inside `dir` (a journey's temporary home), so a journey leaves no
+ * worktree record behind in the sandbox; branches stay. Returns the paths removed.
+ */
+export function removeWorktreesUnder(repo, dir) {
+  const out = run('git', ['-C', repo, 'worktree', 'list', '--porcelain']);
+  const removed = [];
+  const base = realpathSync(dir);
+  for (const line of out.stdout.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const path = line.slice('worktree '.length);
+    let real = path;
+    try {
+      real = realpathSync(path);
+    } catch {
+      // gone already
+    }
+    if (real === base || !real.startsWith(`${base}${sep}`)) continue;
+    const r = run('git', ['-C', repo, 'worktree', 'remove', '--force', path]);
+    if (r.code === 0) removed.push(path);
+  }
+  run('git', ['-C', repo, 'worktree', 'prune', '--expire', 'now']);
+  return removed;
+}
+
+/** Polls `jv task show T --json` until the task is in one of `states`; returns the last view. */
+export async function waitForTask(home, taskId, states, { timeoutMs = 15 * 60_000, onTick } = {}) {
+  let last;
+  await waitFor(
+    () => {
+      const r = jvJson(['task', 'show', taskId], { home });
+      if (r.code === 0 && r.json) last = r.json;
+      onTick?.(last);
+      return last && states.includes(last.state) ? last : undefined;
+    },
+    { timeoutMs, intervalMs: 3000 },
+  );
+  return last;
 }
