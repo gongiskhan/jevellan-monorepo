@@ -47,20 +47,27 @@ import {
 const JOURNEY = 'm05';
 const USAGE = 'node acceptance/m05-queue.mjs [--keep] [--timeout-min 90]';
 
-const TASKS = [
-  {
-    title: 'README: how to run the unit tests',
-    text: 'What: add a short "Running the tests" section to README.md that says to run `npm ci` once and then `TZ=UTC SANDBOX_DATA_DIR=.sandbox-data npm test`.\nWhy: the bare `npm test` fails without those variables and new contributors do not know.\nWhere: README.md only.\nDone when: the section is in README.md and the unit tests still pass.',
-  },
-  {
-    title: 'CONTRIBUTING.md with three short rules',
-    text: 'What: add CONTRIBUTING.md with three short rules: work on a branch, run the unit tests before asking for a review, keep changes small.\nWhy: the project has no contribution guide.\nWhere: a new file CONTRIBUTING.md at the root, nothing else.\nDone when: the file exists with the three rules and the unit tests still pass.',
-  },
-  {
-    title: 'Unit test: invoice total of no lines is zero',
-    text: 'What: add one unit test to src/invoices/index.test.ts that checks the invoice total of an invoice with no lines is 0.\nWhy: the empty case is not covered.\nWhere: src/invoices/index.test.ts only; do not change the source.\nDone when: the new test passes with `TZ=UTC SANDBOX_DATA_DIR=.sandbox-data npm test`.',
-  },
-];
+/**
+ * The three feature tasks, each with work that is new on every run: the clone's main keeps what earlier runs landed
+ * (a task asked to add what is already there could end with nothing to land), so each file is named with the run's
+ * tag and lives under notes/m05/ or next to the invoice tests.
+ */
+function tasks(tag) {
+  return [
+    {
+      title: `How to run the unit tests (${tag})`,
+      text: `What: add notes/m05/${tag}-tests.md, a short note that says to run \`npm ci\` once and then \`TZ=UTC SANDBOX_DATA_DIR=.sandbox-data npm test\`.\nWhy: the bare \`npm test\` fails without those variables and new contributors do not know.\nWhere: that new file only.\nDone when: the file is there and the unit tests still pass.`,
+    },
+    {
+      title: `Three short contribution rules (${tag})`,
+      text: `What: add notes/m05/${tag}-contributing.md with three short rules: work on a branch, run the unit tests before asking for a review, keep changes small.\nWhy: the rules are written down nowhere for this run's notes.\nWhere: that new file only.\nDone when: the file has the three rules and the unit tests still pass.`,
+    },
+    {
+      title: `Unit test: invoice total of no lines is zero (${tag})`,
+      text: `What: add a new test file src/invoices/m05-${tag}.test.ts with one unit test that checks the invoice total of an invoice with no lines is 0, importing from ./index.\nWhy: the empty case needs its own regression test for this run.\nWhere: that new file only; do not change the source or other tests.\nDone when: the new test passes with \`TZ=UTC SANDBOX_DATA_DIR=.sandbox-data npm test\`.`,
+    },
+  ];
+}
 
 async function botConfig() {
   return { tickSeconds: 15, limits: { perProject: 2, total: 2 }, quietHours: null, health: { bind: '127.0.0.1', port: await freePort() }, logLines: 20000 };
@@ -107,7 +114,7 @@ async function main() {
     await check('three feature tasks created at once through jv_task_create over the MCP (stdio)', async () => {
       client = await mcpClient(home);
       const results = await Promise.all(
-        TASKS.map((t) => client.callTool({ name: 'jv_task_create', arguments: { project: SANDBOX_CLONE_NAME, kind: 'feature', title: t.title, text: t.text } })),
+        tasks(id.slice(JOURNEY.length + 1)).map((t) => client.callTool({ name: 'jv_task_create', arguments: { project: SANDBOX_CLONE_NAME, kind: 'feature', title: t.title, text: t.text } })),
       );
       for (const r of results) {
         if (r.isError) return { ok: false, detail: r.content?.[0]?.text ?? 'error' };
