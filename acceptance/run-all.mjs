@@ -7,7 +7,7 @@
 // acceptance/results/<journey>.log.
 //
 // --real, --keep and --no-build are passed to every journey (lib.mjs SHARED_BOOLEANS; a journey ignores the ones it
-// has no use for). --only m01,m03 runs those journeys and keeps the earlier results of the others in the report;
+// has no use for), except --real to m14, whose --real writes the owner's real plist (M-071). --only m01,m03 runs those journeys and keeps the earlier results of the others in the report;
 // --report-only runs nothing and rewrites the report from the results on disk; --out FILE writes the report
 // elsewhere.
 //
@@ -123,6 +123,9 @@ async function main() {
     }
   }
   const passOn = SHARED_BOOLEANS.filter((f) => f !== 'help' && flags[f]).map((f) => `--${f}`);
+  // Flags a journey never gets from a full run: M14's --real writes the owner's real LaunchAgents plist, which macOS
+  // would load at the next login, so a full run keeps M14 in its temporary owner home (M-071).
+  const WITHHELD = { m14: ['--real'] };
   const startedIso = new Date().toISOString();
   if (!flags.real && !flags['report-only']) log('without --real: m01 bootstraps a temporary home only and m03 prints its plan; pass --real for the record runs');
   const entries = [];
@@ -141,7 +144,7 @@ async function main() {
       continue;
     }
     log(`\n==== ${j.name} ${j.title}: node acceptance/${script} ${passOn.join(' ')}`.trimEnd());
-    const ran = await runScript(j.id, script, passOn);
+    const ran = await runScript(j.id, script, passOn.filter((f) => !(WITHHELD[j.id] ?? []).includes(f)));
     const result = readResult(j.id);
     if (result && result.finishedAt >= startedIso) {
       entries.push({ ...j, status: result.status, elapsedMs: result.elapsedMs ?? ran.ms, result });
