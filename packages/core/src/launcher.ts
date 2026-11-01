@@ -13,13 +13,18 @@
 //   jv tail call it at read time; reconcile every bot tick). Reconcile also passes `skip` (a task another process is
 //   starting) and `orphanAfterMs`: a `starting` row that never got a pid within 60 s is lost too, since the process
 //   that was spawning it died and the row would otherwise hold a slot forever (M-number of reconcile).
-// - stopRun marks the row stopped, sends SIGTERM to its process group, and SIGKILL after the grace period (10 s).
+// - stopRun marks the row stopped, sends SIGTERM to its process group, and SIGKILL after the grace period (10 s),
+//   only to a group it can show is the run's (runGroupToSignal): the row is starting or running (a waiting row from
+//   jv attach or a takeover keeps the pid of a jv run that has ended), the recorded pid leads the recorded group, and
+//   the leader's command line names the run, or, when the leader is gone, a process left in the group does. A pid
+//   handed out again to another process (macOS wraps pids within hours) is never signalled, and neither is a group
+//   jv cannot read: no signal on a guess.
 
 import { spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
 import { refused } from './errors.js';
 import { bootstrapNode, jvEntry } from './env.js';
-import { processCommandLine, processGroup as procGroup, processZombie } from './proc.js';
+import { processCommandLine, processGroup as procGroup, processGroupMembers, processZombie } from './proc.js';
 import { recordEvent } from './events.js';
 import { paths } from './paths.js';
 import type { Created, Store } from './store.js';
@@ -223,28 +228,75 @@ export interface StopRunResult {
   session: SessionRow;
   signalled: boolean;
   killed: boolean;
+  /** Why no signal was sent, when none was (runGroupToSignal). */
+  notSignalled?: string;
+}
+
+/**
+ * The process group stopRun may signal for a run, or why it signals none. A signal goes only to a group jv can show
+ * is still the run's:
+ * - only a starting or running row has a process of its own: a queued row has none yet, and a waiting row (jv attach,
+ *   a takeover) keeps the pid of a `jv run` that has ended, a number that may belong to anyone by now;
+ * - the recorded pid leads the recorded group (jv starts every run in its own group: `jv run`, a tmux pane);
+ * - while the leader lives: it is not a zombie, ps puts it at the head of the group, and its command line names the
+ *   run (`jv run <R>`, `jv exec --session <R>`); a pid handed out again runs something else (M-009);
+ * - when the leader is gone and the group lives on: the number was not handed out again while the group had
+ *   members, but the members may be the leftovers of a later holder of the number, so the group is the run's only when
+ *   one of them names the run (its worker or report server, `--session <R>`).
+ * Whatever cannot be read (a command line, the group's members) counts as not shown.
+ */
+export function runGroupToSignal(session: Pick<SessionRow, 'id' | 'state' | 'pid' | 'pgid'>): { pgid: number } | { none: string } {
+  if (!LIVE_STATES.includes(session.state)) return { none: `a ${session.state} run has no process of its own` };
+  const pid = session.pid;
+  if (pid === null || !Number.isInteger(pid) || pid <= 0) return { none: 'no process was recorded' };
+  const pgid = session.pgid ?? pid;
+  if (pgid !== pid) return { none: `process ${pid} does not lead the recorded process group ${pgid}` };
+  if (!groupAlive(pgid)) return { none: `process group ${pgid} is gone` };
+  if (isAlive(pid) && !processZombie(pid)) {
+    const words = processCommandLine(pid);
+    if (words === undefined) return { none: `the command line of process ${pid} cannot be read` };
+    if (!words.includes(session.id)) return { none: `process ${pid} runs something else now (its command line does not name ${session.id})` };
+    if (procGroup(pid) !== pgid) return { none: `process ${pid} does not lead process group ${pgid} any more` };
+    return { pgid };
+  }
+  const members = processGroupMembers(pgid);
+  if (members === undefined) return { none: `the processes of group ${pgid} cannot be listed` };
+  if (members.some((m) => m.words?.includes(session.id))) return { pgid };
+  return { none: `the leader ${pid} of process group ${pgid} is gone and no process left in it names ${session.id}` };
+}
+
+/**
+ * Before the SIGKILL, whether the group the SIGTERM went to is still the run's: unless its leader is alive and runs
+ * something else, yes. Its number cannot be handed out again while the group has members, and the grace period is
+ * far shorter than the time pids take to wrap, so a group still there is the same group.
+ */
+function stillTheRunsGroup(session: Pick<SessionRow, 'id'>, pgid: number): boolean {
+  if (!isAlive(pgid) || processZombie(pgid)) return true;
+  return processCommandLine(pgid)?.includes(session.id) === true;
 }
 
 /**
  * Stops a run: state stopped with `reason`, SIGTERM to its process group, SIGKILL when the group is still there
- * after `graceMs` (default 10 s). The run process writes its own `end` event on SIGTERM; when it had to be killed,
- * the `end` event is written here. A row that already ended is returned unchanged.
+ * after `graceMs` (default 10 s); the group is signalled only when runGroupToSignal shows it is the run's. The run
+ * process writes its own `end` event on SIGTERM; when it had to be killed, or no signal was sent, the `end` event is
+ * written here. A row that already ended is returned unchanged.
  */
 export async function stopRun(store: Store, sessionId: string, reason: string, options: { graceMs?: number } = {}): Promise<StopRunResult> {
   const session = store.requireSession(sessionId);
   if (['done', 'failed', 'lost', 'stopped'].includes(session.state)) return { session, signalled: false, killed: false };
   const stopped = store.setSessionState(sessionId, 'stopped', reason);
-  const pgid = session.pgid ?? session.pid;
-  if (pgid === null || !groupAlive(pgid)) {
+  const target = runGroupToSignal(session);
+  if ('none' in target) {
     if (!store.lastEvent(sessionId, 'end')) recordEvent(store, sessionId, 'end', { status: 'stopped', reason });
-    return { session: store.requireSession(sessionId), signalled: false, killed: false };
+    return { session: store.requireSession(sessionId), signalled: false, killed: false, notSignalled: target.none };
   }
+  const { pgid } = target;
   const signalled = signalGroup(pgid, 'SIGTERM');
   const graceMs = options.graceMs ?? STOP_GRACE_MS;
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline && groupAlive(pgid)) await new Promise((r) => setTimeout(r, 100));
   let killed = false;
-  if (groupAlive(pgid)) killed = signalGroup(pgid, 'SIGKILL');
+  if (groupAlive(pgid) && stillTheRunsGroup(session, pgid)) killed = signalGroup(pgid, 'SIGKILL');
   if (!store.lastEvent(sessionId, 'end')) recordEvent(store, sessionId, 'end', { status: 'stopped', reason });
   return { session: store.getSession(sessionId) ?? stopped, signalled, killed };
 }

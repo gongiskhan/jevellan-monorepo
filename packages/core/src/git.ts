@@ -289,9 +289,23 @@ export async function runWorktreeSetup(store: Store, session: SessionRow, option
     };
     child.stdout?.on('data', write);
     child.stderr?.on('data', write);
+    // The setup's group (detached: pgid = the shell's pid) is killed on a timeout or an abort only while it is the
+    // setup's: until 'close', and not when the shell has exited and its pid is alive again (another process has the
+    // number then). The abort listener goes at 'close' too: the run's signal lives for the whole turn, and a stop long
+    // after the setup must not reach a group that has taken the old number.
+    let settled = false;
     const kill = () => {
+      if (settled || !child.pid) return;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        try {
+          process.kill(child.pid, 0);
+          return; // the shell's pid belongs to another process now
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+        }
+      }
       try {
-        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        process.kill(-child.pid, 'SIGKILL');
       } catch {
         // gone
       }
@@ -301,14 +315,14 @@ export async function runWorktreeSetup(store: Store, session: SessionRow, option
       kill();
     }, timeoutMs);
     options.signal?.addEventListener('abort', kill, { once: true });
-    child.on('error', () => {
+    const finish = (result: { code: number | null; timedOut: boolean }) => {
+      settled = true;
       clearTimeout(timer);
-      resolvePromise({ code: null, timedOut: false });
-    });
-    child.on('close', (c) => {
-      clearTimeout(timer);
-      resolvePromise({ code: c, timedOut: timedOutFlag });
-    });
+      options.signal?.removeEventListener('abort', kill);
+      resolvePromise(result);
+    };
+    child.on('error', () => finish({ code: null, timedOut: false }));
+    child.on('close', (c) => finish({ code: c, timedOut: timedOutFlag }));
   });
   const durationMs = Date.now() - started;
   const ok = code === 0 && !timedOut;

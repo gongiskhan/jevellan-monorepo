@@ -4,11 +4,15 @@
 // heartbeat. A second holder is refused with exit 2 "bot already running (pid N)".
 //
 // A lock whose pid is gone is stale (the bot was killed, the machine rebooted) and is taken over with a log line.
-// "Gone" means: no such process, a zombie, or a live process whose command line does not mention the bot (the pid
-// was reused by something else). A lock file with no readable pid is a holder still writing it when younger than
-// 10 s, and stale after that. Two processes taking over one stale lock at once are serialised by a second O_EXCL
-// file, bot.lock.takeover, held for the moment of the takeover only (stale itself after 10 s): whoever gets it
-// rechecks that the lock is still the stale one, removes it and creates its own with O_EXCL; the other retries.
+// "Gone" means: no such process, a zombie, a live process whose command line does not mention the bot, or a live
+// process that started after the lock was written (`ps -o lstart` against the lock's startedAt): in the last two the
+// pid was handed out again to something else. A holder that cannot be checked (its command line or start time cannot
+// be read, or the lock has no startedAt) counts as holding the lock for a taker, so two bots never run; `jv bot stop`
+// signals only a holder it has checked (checkLockHolder). A lock file with no readable pid is a holder still writing
+// it when younger than 10 s, and stale after that. Two processes taking over one stale lock at once are serialised
+// by a second O_EXCL file, bot.lock.takeover, held for the moment of the takeover only (stale itself after 10 s):
+// whoever gets it rechecks that the lock is still the stale one, removes it and creates its own with O_EXCL; the
+// other retries.
 // The lock is released by its holder only: a release removes the file only while it still holds this pid.
 
 import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
@@ -16,7 +20,7 @@ import { dirname } from 'node:path';
 import { runFile } from 'jevellan-core/doctor';
 import { refused } from 'jevellan-core/errors';
 import { isAlive } from 'jevellan-core/launcher';
-import { processCommandLine, processZombie } from 'jevellan-core/proc';
+import { processCommandLine, processStartedAt, processZombie } from 'jevellan-core/proc';
 
 /** $JV_HOME/run/bot.lock */
 export function botLockFile(): string {
@@ -65,13 +69,42 @@ export function readBotLock(file: string = botLockFile()): LockContent | undefin
   return text !== '' && Number.isInteger(pid) && pid > 0 ? { pid, command: '', startedAt: '' } : undefined;
 }
 
-/** Whether `pid` is a live bot: alive, not a zombie, and (when its command line can be read) a bot command. */
-export function lockHolderAlive(pid: number): boolean {
-  if (pid === process.pid) return true;
-  if (!isAlive(pid) || processZombie(pid)) return false;
+/**
+ * Slack on the start time check: ps gives whole seconds (truncated on macOS; Linux's procps works it out from the boot
+ * time and can land a second late). The holder starts before it writes the lock, and a pid is not handed out again
+ * within seconds of its holder's start.
+ */
+export const START_SLACK_MS = 2000;
+
+export interface LockHolderCheck {
+  /** holder: the lock's own process; stale: not it (gone, not a bot, or a later process with the pid); unverified: alive, but it cannot be checked. */
+  state: 'holder' | 'stale' | 'unverified';
+  /** Why, for messages. */
+  why: string;
+}
+
+/** What the lock's pid is now (see the header). `startedAt` reads a process's start time (tests replace it). */
+export function checkLockHolder(lock: LockContent, startedAt: (pid: number) => number | undefined = processStartedAt): LockHolderCheck {
+  const { pid } = lock;
+  if (pid === process.pid) return { state: 'holder', why: 'this process holds it' };
+  if (!isAlive(pid)) return { state: 'stale', why: `process ${pid} is gone` };
+  if (processZombie(pid)) return { state: 'stale', why: `process ${pid} has ended` };
   const words = processCommandLine(pid);
-  if (words === undefined) return true;
-  return words.some((w) => /\bbot\b/.test(w));
+  if (words !== undefined && !words.some((w) => /\bbot\b/.test(w))) return { state: 'stale', why: `process ${pid} is not a bot` };
+  const written = Date.parse(lock.startedAt);
+  const started = startedAt(pid);
+  if (Number.isFinite(written) && started !== undefined && started > Math.floor(written / 1000) * 1000 + START_SLACK_MS) {
+    return { state: 'stale', why: `process ${pid} started after the lock was written, so the pid was reused` };
+  }
+  if (words === undefined) return { state: 'unverified', why: `the command line of process ${pid} cannot be read` };
+  if (!Number.isFinite(written)) return { state: 'unverified', why: 'the lock records no start time' };
+  if (started === undefined) return { state: 'unverified', why: `the start time of process ${pid} cannot be read` };
+  return { state: 'holder', why: `process ${pid} is the bot that wrote the lock` };
+}
+
+/** Whether the lock may be held by a live bot (anything but stale): what a taker checks before it takes the lock over. */
+export function lockHolderAlive(lock: LockContent): boolean {
+  return checkLockHolder(lock).state !== 'stale';
 }
 
 function ageMs(file: string): number {
@@ -117,7 +150,7 @@ function takeOver(file: string, stale: LockContent | undefined): boolean {
     const now = readBotLock(file);
     if (now) {
       // Someone else took it over and holds it now: leave it.
-      if (now.pid !== stale?.pid || lockHolderAlive(now.pid)) return true;
+      if (now.pid !== stale?.pid || lockHolderAlive(now)) return true;
     } else if (ageMs(file) <= UNREADABLE_LOCK_GRACE_MS) {
       // Gone (another takeover just removed it) or being written by a new holder: retry from the start.
       return true;
@@ -158,7 +191,7 @@ export function acquireBotLock(options: { file?: string; command: string; onTake
       };
     }
     const holder = readBotLock(file);
-    if (holder && lockHolderAlive(holder.pid)) throw refused(`bot already running (pid ${holder.pid})`);
+    if (holder && lockHolderAlive(holder)) throw refused(`bot already running (pid ${holder.pid})`);
     if (!holder && ageMs(file) <= UNREADABLE_LOCK_GRACE_MS) {
       pause(100);
       continue;

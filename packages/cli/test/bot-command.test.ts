@@ -1,13 +1,14 @@
 // jv bot start|stop|status|tick|install-service (brief sections 4 and 8) through the command line, on a temporary
 // JV_HOME: status before any bot ({bot, config, service}, "bot not running"), one tick (its summary, bot.json written,
 // the heartbeat left behind), install-service into a temporary owner home (plutil -lint on macOS), stop with no bot,
-// and the real `jv bot start` in a child process: alive in jv bot status, a second start and a tick refused with
-// exit 2, jv bot stop ending it with exit 0 and the lock gone. No provider is ready in this home, so nothing reaches
-// a provider, Jev or the network.
+// stop leaving alone a bot-named process a stale lock names (a reused pid, or a lock it cannot check), and the real
+// `jv bot start` in a child process: alive in jv bot status, a second start and a tick refused with exit 2, jv bot
+// stop ending it with exit 0 and the lock gone. No provider is ready in this home, so nothing reaches a provider, Jev
+// or the network.
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -118,6 +119,39 @@ test('jv bot stop with no bot: "bot not running", exit 0; an unknown subcommand:
   assert.equal(r.code, 0);
   assert.deepEqual(JSON.parse(r.out), { stopped: false, pid: null, reason: 'bot not running' });
   assert.equal((await jv('bot', 'nap')).code, 2);
+});
+
+test('jv bot stop sends no signal to a bot-named process the lock cannot be shown to belong to', async () => {
+  // The owner's own bot project, running under a pid a stale bot.lock still names (the bot died without its cleanup).
+  const dir = join(home, 'owner-telegram-bot');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'index.mjs'), 'setInterval(() => {}, 1000);\n');
+  const decoy = spawn(process.execPath, [join(dir, 'index.mjs')], { stdio: 'ignore' });
+  const lockFile = join(home, 'run', 'bot.lock');
+  mkdirSync(join(home, 'run'), { recursive: true });
+  const untouched = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return decoy.exitCode === null && decoy.signalCode === null;
+  };
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    // It started after the lock was written: the pid was handed out again, so no bot holds the lock.
+    writeFileSync(lockFile, `${JSON.stringify({ pid: decoy.pid, command: 'start', startedAt: new Date(Date.now() - 3_600_000).toISOString() })}\n`);
+    const r = await jv('bot', 'stop', '--json');
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(JSON.parse(r.out), { stopped: false, pid: decoy.pid, reason: 'bot not running' });
+    assert.equal(await untouched(), true, `jv bot stop signalled the owner's process (${decoy.signalCode})`);
+
+    // A lock without a start time cannot be checked: no signal on a guess, exit 2 naming the pid.
+    writeFileSync(lockFile, `${decoy.pid}\n`);
+    const plain = await jv('bot', 'stop');
+    assert.equal(plain.code, 2);
+    assert.match(plain.err, new RegExp(`could not verify that pid ${decoy.pid} is the bot`));
+    assert.equal(await untouched(), true, `jv bot stop signalled the owner's process (${decoy.signalCode})`);
+  } finally {
+    rmSync(lockFile, { force: true });
+    decoy.kill('SIGKILL');
+  }
 });
 
 test('jv bot start in a child: alive, a second start and a tick refused, jv bot stop ends it with exit 0', { timeout: 60_000 }, async () => {
