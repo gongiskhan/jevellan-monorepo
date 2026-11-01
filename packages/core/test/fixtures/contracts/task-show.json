@@ -6,6 +6,7 @@
   "text": "The customers page shows a blank table when there are no customers. Find where it renders and say what an empty state would need.",
   "state": "waiting-owner",
   "stateReason": "step 1 investigate: needs-decision",
+  "origin": "owner",
   "currentStep": 0,
   "branch": null,
   "worktree": null,

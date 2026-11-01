@@ -89,6 +89,8 @@ export const TaskShowSchema = z.strictObject({
   text: z.string(),
   state: z.enum(TASK_STATES),
   stateReason: z.string(),
+  /** Who created the task (schema 2): owner, coordinator, ui, mcp, schedule:<C>, planner:<J>, improver:<J>. */
+  origin: z.string().regex(/^(owner|coordinator|ui|mcp|schedule:C[0-9A-Z]{6}|planner:J[0-9A-Z]{6}|improver:J[0-9A-Z]{6})$/),
   currentStep: CountSchema,
   branch: z.string().min(1).nullable(),
   worktree: z.string().min(1).nullable(),
