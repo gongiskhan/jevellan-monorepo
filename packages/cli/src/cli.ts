@@ -52,7 +52,7 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
   ui: { module: './commands/ui.js', usage: 'jv ui [--port 7071] [--bind ADDRESS]' },
   coordinator: {
     module: './commands/coordinator.js',
-    usage: 'jv coordinator start|stop|restart|status --project N',
+    usage: 'jv coordinator start|stop|restart|status --project N | jv coordinator message --project N "text"',
   },
   handoff: { module: './commands/handoff.js', usage: 'jv handoff --project N' },
   notes: { module: './commands/notes.js', usage: 'jv notes write --project N < text' },

@@ -34,12 +34,31 @@
 // Stop types /exit, waits up to 30 s for the session to end, then kills the tmux session (only ours). Restart is
 // stop, start, then the handoff typed as the first message, prefixed "Handoff from your previous session:" (pasted
 // through a tmux buffer, then Enter).
+//
+// Typing into a coordinator window is serialized across processes (see coordinator-chat.ts): wake lines
+// (wake.ts), the owner's lines (coordinator-chat.ts), /exit and the handoff all go through typeLine or pasteMessage,
+// which hold $JV_HOME/run/typing-<tmux name>.lock (created with link(2), so it appears with its holder in it) from the
+// first key to Enter. Two typists would otherwise interleave: a wake line typed between the owner's text and its
+// Enter would be submitted as one message with it. A lock whose holder is gone, or older than 60 s, is taken over;
+// a typist that waits 20 s for a live holder gives up (typeLine and pasteMessage return false).
+// runningCoordinator() is D-055's "ours" check as a lookup: liveCoordinator plus the pane's command line.
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, chmodSync, constants as fsConstants, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  accessSync,
+  chmodSync,
+  constants as fsConstants,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
-import { notFound, refused } from './errors.js';
+import { conflict, JvError, notFound, refused } from './errors.js';
 import { buildHandoff, formatHandoff } from './handoff.js';
 import { isAlive } from './launcher.js';
 import { paths } from './paths.js';
@@ -118,22 +137,179 @@ export function panePid(tmux: TmuxRunner, name: string): number | undefined {
   return r.code === 0 && Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-/** Types one line literally, then Enter. */
+/** Types one line literally, then Enter, holding the window's typing lock. */
 export function typeLine(tmux: TmuxRunner, name: string, line: string): boolean {
-  if (tmux(['send-keys', '-t', paneTarget(name), '-l', '--', line]).code !== 0) return false;
-  return tmux(['send-keys', '-t', paneTarget(name), 'Enter']).code === 0;
+  return typing(name, () => {
+    if (tmux(['send-keys', '-t', paneTarget(name), '-l', '--', line]).code !== 0) return false;
+    return tmux(['send-keys', '-t', paneTarget(name), 'Enter']).code === 0;
+  });
 }
 
 /**
  * Types `prefix` literally, pastes `body` through a tmux buffer (bracketed paste, so Claude Code takes it as one
- * pasted block however long it is), then Enter.
+ * pasted block however long it is), then Enter, holding the window's typing lock.
  */
 export function pasteMessage(tmux: TmuxRunner, name: string, prefix: string, body: string): boolean {
-  const buffer = `jv-${process.pid}-${randomUUID().slice(0, 8)}`;
-  if (prefix !== '' && tmux(['send-keys', '-t', paneTarget(name), '-l', '--', `${prefix} `]).code !== 0) return false;
-  if (tmux(['load-buffer', '-b', buffer, '-'], body).code !== 0) return false;
-  if (tmux(['paste-buffer', '-p', '-d', '-b', buffer, '-t', paneTarget(name)]).code !== 0) return false;
-  return tmux(['send-keys', '-t', paneTarget(name), 'Enter']).code === 0;
+  return typing(name, () => {
+    const buffer = `jv-${process.pid}-${randomUUID().slice(0, 8)}`;
+    if (prefix !== '' && tmux(['send-keys', '-t', paneTarget(name), '-l', '--', `${prefix} `]).code !== 0) return false;
+    if (tmux(['load-buffer', '-b', buffer, '-'], body).code !== 0) return false;
+    if (tmux(['paste-buffer', '-p', '-d', '-b', buffer, '-t', paneTarget(name)]).code !== 0) return false;
+    return tmux(['send-keys', '-t', paneTarget(name), 'Enter']).code === 0;
+  });
+}
+
+// ---- the typing lock ------------------------------------------------------------------------------------------
+
+/** How long a typist waits for another process that types into the same window. */
+export const TYPING_LOCK_WAIT_MS = 20_000;
+/** A typing lock this old is taken over even when its holder is alive (a typist makes at most four tmux calls). */
+export const TYPING_LOCK_STALE_MS = 60_000;
+
+export interface TypingLockHolder {
+  pid: number;
+  at: string;
+}
+
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+/** Typing locks this process holds, by tmux name, with their depth (typeLine inside withTypingLock re-enters). */
+const heldTypingLocks = new Map<string, { depth: number; content: string }>();
+
+/** $JV_HOME/run/typing-<tmux name>.lock, held while one process types into that window. */
+export function typingLockFile(name: string): string {
+  return join(paths.home, 'run', `typing-${name.replace(/[^A-Za-z0-9_.-]/g, '_')}.lock`);
+}
+
+function readLockText(file: string): string | undefined {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHolder(text: string): TypingLockHolder | undefined {
+  try {
+    const v = JSON.parse(text) as Partial<TypingLockHolder>;
+    return typeof v.pid === 'number' && Number.isInteger(v.pid) && v.pid > 0 && typeof v.at === 'string' ? { pid: v.pid, at: v.at } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a recorded holder still counts: its process is alive, the lock is not stale, and it is not our leftover. */
+function holderCounts(name: string, holder: TypingLockHolder, alive: (pid: number) => boolean, now: number): boolean {
+  if (holder.pid === process.pid) return heldTypingLocks.has(name);
+  const age = now - Date.parse(holder.at);
+  return alive(holder.pid) && Number.isFinite(age) && age < TYPING_LOCK_STALE_MS;
+}
+
+/** The process typing into the window `name` right now, or undefined when nobody holds its typing lock. */
+export function typingLockHolder(name: string, alive: (pid: number) => boolean = isAlive): TypingLockHolder | undefined {
+  const text = readLockText(typingLockFile(name));
+  const holder = text === undefined ? undefined : parseHolder(text);
+  return holder && holderCounts(name, holder, alive, Date.now()) ? holder : undefined;
+}
+
+function acquireTypingLock(name: string, waitMs: number, alive: (pid: number) => boolean): string {
+  const file = typingLockFile(name);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const content = JSON.stringify({ pid: process.pid, at: new Date().toISOString() } satisfies TypingLockHolder);
+    // Written to a file of our own, then linked to the lock name: link(2) fails when the lock exists, and a lock that
+    // exists always holds its holder (no window in which another process reads an empty lock and takes it over).
+    const mine = `${file}.${process.pid}-${randomUUID().slice(0, 8)}`;
+    writeFileSync(mine, content, { mode: 0o600 });
+    try {
+      linkSync(mine, file);
+      return content;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    } finally {
+      try {
+        unlinkSync(mine);
+      } catch {
+        // already gone
+      }
+    }
+    const seen = readLockText(file);
+    if (seen === undefined) continue;
+    const holder = parseHolder(seen);
+    if (!holder || !holderCounts(name, holder, alive, Date.now())) {
+      // Gone, stale or unreadable: taken over, unless another process replaced it since it was read.
+      if (readLockText(file) === seen) {
+        try {
+          unlinkSync(file);
+        } catch {
+          // someone else took it over first
+        }
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw conflict(`pid ${holder.pid} has been typing into tmux ${name} since ${holder.at}; try again`);
+    }
+    Atomics.wait(SLEEP_CELL, 0, 0, 20);
+  }
+}
+
+function releaseTypingLock(name: string, content: string): void {
+  const file = typingLockFile(name);
+  if (readLockText(file) !== content) return;
+  try {
+    unlinkSync(file);
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Runs `fn` (synchronous) holding the typing lock of the window `name`, across processes. Nested calls in this process
+ * join the outer hold. Throws JvError exit 4 when another live process holds it for longer than the wait.
+ */
+export function withTypingLock<T>(
+  name: string,
+  fn: () => T,
+  options: { waitMs?: number; alive?: (pid: number) => boolean } = {},
+): T {
+  if (heldTypingLocks.has(name)) return holding(name, undefined, fn);
+  return holding(name, acquireTypingLock(name, options.waitMs ?? TYPING_LOCK_WAIT_MS, options.alive ?? isAlive), fn);
+}
+
+/** Runs fn as the holder of `name`: a new hold (`content` of the lock file we made) or a nested one (undefined). */
+function holding<T>(name: string, content: string | undefined, fn: () => T): T {
+  const held = heldTypingLocks.get(name);
+  if (content === undefined && held) held.depth++;
+  else heldTypingLocks.set(name, { depth: 1, content: content ?? '' });
+  try {
+    const result = fn();
+    if (result instanceof Promise) throw new Error('withTypingLock() takes a synchronous function');
+    return result;
+  } finally {
+    const now = heldTypingLocks.get(name);
+    if (now && --now.depth === 0) {
+      heldTypingLocks.delete(name);
+      if (content !== undefined) releaseTypingLock(name, content);
+    }
+  }
+}
+
+/**
+ * typeLine and pasteMessage under the lock. A typist that cannot get it (another live process kept it past the wait)
+ * types nothing and returns false; a lock that cannot be made at all (an unwritable run folder) does not stop the
+ * typing, as before the lock existed.
+ */
+function typing(name: string, fn: () => boolean): boolean {
+  if (heldTypingLocks.has(name)) return holding(name, undefined, fn);
+  let content: string;
+  try {
+    content = acquireTypingLock(name, TYPING_LOCK_WAIT_MS, isAlive);
+  } catch (error) {
+    if (error instanceof JvError) return false;
+    return fn();
+  }
+  return holding(name, content, fn);
 }
 
 // ---- the screen ---------------------------------------------------------------------------------------------
@@ -242,6 +418,21 @@ export function paneIsOurs(tmux: TmuxRunner, name: string, sessionId: string, re
 
 function defaultCmdline(pid: number): string[] | undefined {
   return processCommandLine(pid);
+}
+
+/**
+ * The project's coordinator when it is ours and running (D-055): registered and not stopped, its row starting or
+ * running, its tmux session there, and the pane's process `jv exec --session <that row>`. Else undefined.
+ */
+export function runningCoordinator(
+  store: Store,
+  projectId: string,
+  deps: Pick<CoordinatorDeps, 'tmux' | 'readCmdline'> = {},
+): LiveCoordinator | undefined {
+  const tmux = deps.tmux ?? realTmux;
+  const live = liveCoordinator(store, projectId, tmux);
+  if (!live) return undefined;
+  return paneIsOurs(tmux, live.record.tmuxSession, live.session.id, deps.readCmdline ?? defaultCmdline) ? live : undefined;
 }
 
 // ---- the prompt ---------------------------------------------------------------------------------------------
