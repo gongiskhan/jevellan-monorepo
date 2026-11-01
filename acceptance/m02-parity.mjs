@@ -73,6 +73,7 @@ const KNOWN_ADDITIONS = {
   'task show': {
     origin: 'brief section 3: tasks.origin (store schema 2)',
     'messages[].meta': 'brief section 7: messages.meta_json (store schema 2), the raw A2UI action of a UI action; only on such messages',
+    'landings[].checks': 'brief section 7: the landing block shows checks with their outcome (M-069)',
   },
   report: {
     ui: 'brief section 3: the optional ui field of the report (reports.ui_json)',
