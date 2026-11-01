@@ -20,10 +20,17 @@
 //   (env.ownerHome, never a provider HOME); WARN when it is not installed.
 // - member: an informational line when launchd runs Jevellan's member daemon (dev.jevellan.daemon); jv only reads
 //   `launchctl list` and never acts on it.
+//
+// The version probes of the two agent CLIs (`claude --version`, `codex --version`) never run with the owner's HOME:
+// Codex creates $CODEX_HOME/tmp/arg0/ on every start, --version included, so a probe run with the owner's HOME
+// would write into ~/.codex, which brief section 1 keeps unmodified. They run with the base variables only, HOME =
+// $JV_HOME/run/probe-home (mode 700, created first) and CODEX_HOME = its .codex (Codex warns when CODEX_HOME does
+// not exist), cwd that folder; CLAUDE_CONFIG_DIR is never set (as for workers, env.ts). When the folder cannot be
+// made the line is WARN and the CLI is not run.
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { readInstall, skillJvVersion, skillsSourceDir, skillsTreeHash, type InstallRecord } from './bootstrap.js';
@@ -434,8 +441,8 @@ function providersOrFail(ctx: Ctx, name: string): ProvidersConfig | CheckResult 
   return 'error' in c ? fail(name, `providers.json: ${c.error}`, 'fix providers.json, or run jv update to write it from the template') : c;
 }
 
-async function tool(ctx: Ctx, name: string, command: string, args: string[], missing: CheckStatus, fix: string): Promise<CheckResult[]> {
-  const r = await ctx.deps.exec(command, args, { timeoutMs: 15_000 });
+async function tool(ctx: Ctx, name: string, command: string, args: string[], missing: CheckStatus, fix: string, where: Pick<ExecOptions, 'env' | 'cwd'> = {}): Promise<CheckResult[]> {
+  const r = await ctx.deps.exec(command, args, { ...where, timeoutMs: 15_000 });
   if (r.error === 'not-found') return [{ name, status: missing, detail: `${command} is not on PATH`, fix }];
   if (r.code !== 0) return [{ name, status: missing, detail: `${command} ${args.join(' ')} failed: ${firstLine(r.stderr || r.stdout) || `exit ${r.code ?? r.error}`}`, fix }];
   return [ok(name, firstLine(r.stdout || r.stderr))];
@@ -453,9 +460,40 @@ const checkNode: Check = async (ctx) => {
 
 const checkGit: Check = (ctx) => tool(ctx, 'git', 'git', ['--version'], 'FAIL', 'install git');
 const checkTmux: Check = (ctx) => tool(ctx, 'tmux', 'tmux', ['-V'], 'FAIL', 'install tmux (sudo apt install tmux)');
-const checkClaude: Check = (ctx) =>
-  tool(ctx, 'claude', 'claude', ['--version'], 'FAIL', 'install Claude Code: curl -fsSL https://claude.ai/install.sh | bash');
-const checkCodex: Check = (ctx) => tool(ctx, 'codex', 'codex', ['--version'], 'WARN', 'install Codex: npm install -g @openai/codex');
+/** The HOME of the agent CLIs' version probes: a folder jv owns, never the owner's home (see the header). */
+function probeHome(): string {
+  return join(paths.home, 'run', 'probe-home');
+}
+
+/**
+ * The environment of an agent CLI's version probe: the base variables of `base` (never its HOME, CODEX_HOME or
+ * CLAUDE_CONFIG_DIR), HOME = probeHome() and CODEX_HOME = its .codex, both created (mode 700) before the probe.
+ */
+function versionProbeEnvironment(base: NodeJS.ProcessEnv): { env: Record<string, string>; cwd: string } {
+  const home = probeHome();
+  const codexHome = join(home, '.codex');
+  mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  const env: Record<string, string> = {};
+  for (const k of BASE_ENV_KEYS) if (base[k] !== undefined) env[k] = base[k]!;
+  env.HOME = home;
+  env.CODEX_HOME = codexHome;
+  return { env, cwd: home };
+}
+
+/** tool() for claude and codex, in the probe environment; WARN without running the CLI when it cannot be made. */
+async function agentTool(ctx: Ctx, name: string, command: string, missing: CheckStatus, fix: string): Promise<CheckResult[]> {
+  let where: { env: Record<string, string>; cwd: string };
+  try {
+    where = versionProbeEnvironment(ctx.deps.env);
+  } catch (error) {
+    const why = firstLine(error instanceof Error ? error.message : String(error));
+    return [warn(name, `${command} --version not probed: cannot create ${probeHome()} (${why})`, `make ${paths.home} writable, then run jv doctor again`)];
+  }
+  return tool(ctx, name, command, ['--version'], missing, fix, where);
+}
+
+const checkClaude: Check = (ctx) => agentTool(ctx, 'claude', 'claude', 'FAIL', 'install Claude Code: curl -fsSL https://claude.ai/install.sh | bash');
+const checkCodex: Check = (ctx) => agentTool(ctx, 'codex', 'codex', 'WARN', 'install Codex: npm install -g @openai/codex');
 
 const checkProviders: Check = async (ctx) => {
   const c = providersOrFail(ctx, 'providers');
