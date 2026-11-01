@@ -61,6 +61,17 @@ import {
   type TaskRow,
   type TaskState,
   type UsageSource,
+  GOAL_STATES,
+  JOB_KINDS,
+  JOB_STATES,
+  SCHEDULE_KINDS,
+  type GoalRow,
+  type GoalState,
+  type JobKind,
+  type JobRow,
+  type JobState,
+  type ScheduleKind,
+  type ScheduleRow,
 } from './types.js';
 
 export const SCHEMA_VERSION = '2';
@@ -471,6 +482,32 @@ export interface NewLanding {
   checks_json?: string;
   commit_sha?: string | null;
   reason?: string;
+}
+
+export interface NewSchedule {
+  project_id: string;
+  name: string;
+  cron: string;
+  tz: string;
+  kind: ScheduleKind;
+  spec_json: string;
+  next_run_at: string;
+  enabled?: boolean;
+}
+
+export interface NewGoal {
+  project_id: string;
+  title: string;
+  text: string;
+  priority?: number;
+}
+
+export interface NewJob {
+  project_id: string;
+  kind: JobKind;
+  request_id: string;
+  input_json?: string;
+  state_reason?: string;
 }
 
 export interface NewMessage {
@@ -1665,6 +1702,157 @@ export class Store {
       `SELECT * FROM provider_usage${w.sql} ORDER BY observed_at DESC LIMIT 1`,
       ...w.params,
     );
+  }
+
+  // ---- schema 2: schedules, goals, jobs (brief sections 3, 9, 10) ---------------------------------------------
+
+  createSchedule(input: NewSchedule): ScheduleRow {
+    checkOneOf('schedule kind', input.kind, SCHEDULE_KINDS);
+    if (input.name.trim() === '') throw refused('a schedule needs a name');
+    return this.tx(() => {
+      if (!this.getProject(input.project_id)) throw notFound(`no project ${input.project_id}`);
+      const same = this.get<ScheduleRow>('SELECT * FROM schedules WHERE project_id = ? AND name = ?', input.project_id, input.name);
+      if (same) throw conflict(`project already has a schedule named ${JSON.stringify(input.name)} (${same.id})`, { id: same.id, fields: ['name'] });
+      const id = this.insertWithId('schedule', 'schedules', {
+        project_id: input.project_id,
+        name: input.name,
+        cron: input.cron,
+        tz: input.tz,
+        kind: input.kind,
+        spec_json: input.spec_json,
+        enabled: input.enabled === false ? 0 : 1,
+        last_run_at: null,
+        next_run_at: input.next_run_at,
+        last_result: '',
+        created_at: nowIso(),
+      });
+      return this.getSchedule(id)!;
+    });
+  }
+
+  getSchedule(id: string): ScheduleRow | undefined {
+    return this.get<ScheduleRow>('SELECT * FROM schedules WHERE id = ?', id);
+  }
+
+  getScheduleByName(projectId: string, name: string): ScheduleRow | undefined {
+    return this.get<ScheduleRow>('SELECT * FROM schedules WHERE project_id = ? AND name = ?', projectId, name);
+  }
+
+  listSchedules(filter: { project_id?: string; enabled?: boolean; dueBy?: string } = {}): ScheduleRow[] {
+    const w = where([
+      ['project_id = ?', filter.project_id],
+      ['enabled = ?', filter.enabled === undefined ? undefined : filter.enabled ? 1 : 0],
+      ['next_run_at <= ?', filter.dueBy],
+    ]);
+    return this.all<ScheduleRow>(`SELECT * FROM schedules${w.sql} ORDER BY next_run_at, id`, ...w.params);
+  }
+
+  updateSchedule(id: string, patch: Partial<Pick<ScheduleRow, 'enabled' | 'last_run_at' | 'next_run_at' | 'last_result' | 'cron' | 'tz' | 'spec_json'>>): ScheduleRow {
+    return this.tx(() => {
+      if (!this.getSchedule(id)) throw notFound(`no schedule ${id}`);
+      this.update('schedules', 'id', id, this.pick(patch, ['enabled', 'last_run_at', 'next_run_at', 'last_result', 'cron', 'tz', 'spec_json']));
+      return this.getSchedule(id)!;
+    });
+  }
+
+  createGoal(input: NewGoal): GoalRow {
+    if (input.title.trim() === '') throw refused('a goal needs a title');
+    if (charLength(input.title) > 120) throw refused('the goal title is longer than 120 characters');
+    if (charLength(input.text) > 8000) throw refused('the goal text is longer than 8000 characters');
+    const priority = input.priority ?? 3;
+    if (!Number.isInteger(priority) || priority < 1 || priority > 5) throw refused('the goal priority is 1 to 5');
+    return this.tx(() => {
+      if (!this.getProject(input.project_id)) throw notFound(`no project ${input.project_id}`);
+      const at = nowIso();
+      const id = this.insertWithId('goal', 'goals', {
+        project_id: input.project_id,
+        title: input.title.trim(),
+        text: input.text,
+        priority,
+        state: 'open',
+        created_at: at,
+        updated_at: at,
+      });
+      return this.getGoal(id)!;
+    });
+  }
+
+  getGoal(id: string): GoalRow | undefined {
+    return this.get<GoalRow>('SELECT * FROM goals WHERE id = ?', id);
+  }
+
+  listGoals(filter: { project_id?: string; states?: readonly GoalState[] } = {}): GoalRow[] {
+    const w = where([
+      ['project_id = ?', filter.project_id],
+      ['state', filter.states],
+    ]);
+    return this.all<GoalRow>(`SELECT * FROM goals${w.sql} ORDER BY priority, created_at, id`, ...w.params);
+  }
+
+  setGoalState(id: string, state: GoalState): GoalRow {
+    checkOneOf('goal state', state, GOAL_STATES);
+    return this.tx(() => {
+      if (!this.getGoal(id)) throw notFound(`no goal ${id}`);
+      this.update('goals', 'id', id, { state, updated_at: nowIso() });
+      return this.getGoal(id)!;
+    });
+  }
+
+  /** Creates a queued job, or returns the job of the same request id (created false). */
+  createJob(input: NewJob): Created<JobRow> {
+    checkOneOf('job kind', input.kind, JOB_KINDS);
+    if (input.request_id.trim() === '') throw refused('a job needs a request id');
+    return this.tx(() => {
+      const existing = this.getJobByRequestId(input.request_id);
+      if (existing) return { row: existing, created: false };
+      if (!this.getProject(input.project_id)) throw notFound(`no project ${input.project_id}`);
+      const id = this.insertWithId('job', 'jobs', {
+        project_id: input.project_id,
+        kind: input.kind,
+        request_id: input.request_id,
+        task_id: null,
+        state: 'queued',
+        state_reason: checkReason(input.state_reason ?? 'queued'),
+        input_json: input.input_json ?? '{}',
+        result_json: null,
+        created_at: nowIso(),
+        ended_at: null,
+      });
+      return { row: this.getJob(id)!, created: true };
+    });
+  }
+
+  getJob(id: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE id = ?', id);
+  }
+
+  getJobByRequestId(requestId: string): JobRow | undefined {
+    return this.get<JobRow>('SELECT * FROM jobs WHERE request_id = ?', requestId);
+  }
+
+  listJobs(filter: { project_id?: string; kind?: JobKind; states?: readonly JobState[]; task_id?: string } = {}): JobRow[] {
+    const w = where([
+      ['project_id = ?', filter.project_id],
+      ['kind = ?', filter.kind],
+      ['state', filter.states],
+      ['task_id = ?', filter.task_id],
+    ]);
+    return this.all<JobRow>(`SELECT * FROM jobs${w.sql} ORDER BY created_at DESC, id`, ...w.params);
+  }
+
+  /** Moves a job; entering done or failed sets ended_at. */
+  setJobState(id: string, state: JobState, reason: string, patch: { task_id?: string | null; input_json?: string; result_json?: string | null } = {}): JobRow {
+    checkOneOf('job state', state, JOB_STATES);
+    return this.tx(() => {
+      if (!this.getJob(id)) throw notFound(`no job ${id}`);
+      this.update('jobs', 'id', id, {
+        state,
+        state_reason: checkReason(reason),
+        ended_at: state === 'done' || state === 'failed' ? nowIso() : null,
+        ...this.pick(patch, ['task_id', 'input_json', 'result_json']),
+      });
+      return this.getJob(id)!;
+    });
   }
 }
 
