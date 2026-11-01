@@ -278,7 +278,8 @@ describe('every fixture parses with its schema', () => {
     for (const name of ['report.json', 'placement-state.json', 'decisions.json', 'events.json', 'exit-codes.json', 'request-ids.json', 'wake-lines.json', 'providers.json', 'status.json', 'task-show.json']) {
       const text = readFileSync(join(FIXTURES, name), 'utf8');
       assert.doesNotMatch(text, /\/Users\/|\/private\/|\/var\/folders\//, name);
-      assert.doesNotMatch(text, /sk-ant-|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN/, name);
+      // The key prefix is built from parts so this file itself never holds a key shape (scripts/secret-scan.mjs).
+      assert.doesNotMatch(text, new RegExp(`${['sk', 'ant'].join('-')}-|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN`), name);
       assert.doesNotMatch(text, /\u2014/u, name);
     }
   });

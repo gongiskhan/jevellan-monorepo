@@ -3,7 +3,6 @@
 // No network beyond loopback, no model calls, no browser (the visual check is acceptance/viewer-check.mjs).
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';

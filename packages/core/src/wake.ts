@@ -83,6 +83,8 @@ function writeWakeState(store: Store, projectId: string, state: WakeState): void
 
 /** One line, no control characters, at most WAKE_LINE_MAX characters, secrets masked. */
 export function wakeLine(line: string): string {
+  // Control characters are what this removes, so the expression names them.
+  // eslint-disable-next-line no-control-regex
   const flat = redact(line).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
   const chars = [...flat];
   return chars.length <= WAKE_LINE_MAX ? flat : `${chars.slice(0, WAKE_LINE_MAX - 3).join('')}...`;

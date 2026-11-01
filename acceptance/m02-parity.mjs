@@ -33,7 +33,6 @@ import {
   cleanup,
   fileUrl,
   finish,
-  git,
   jv,
   jvJson,
   log,

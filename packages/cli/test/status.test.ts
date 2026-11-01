@@ -199,7 +199,7 @@ test('watchStatus shows a repaint error in place and keeps going', async () => {
   while (writes.length < 3) await new Promise((r) => setTimeout(r, 5));
   signals.emit('SIGINT');
   assert.equal(await done, 0);
-  assert.match(writes[1]!, /^\x1b\[H\x1b\[2Jjv: the store is busy \(trying again in 0 s\)\n$/);
+  assert.equal(writes[1], `${W.CLEAR_SCREEN}jv: the store is busy (trying again in 0 s)\n`);
   assert.equal(writes[2], `${W.CLEAR_SCREEN}paint 3\n`);
 });
 

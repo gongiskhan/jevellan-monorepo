@@ -510,11 +510,15 @@ export function decisions(db: ReadOnlyStore, input: DecisionFilterInput = {}): D
   if (input.project) {
     projectId = db.get<ProjectRow>('SELECT * FROM projects WHERE name = ? OR id = ?', input.project, input.project)?.id ?? '-';
   }
-  if (kind) (clauses.push('d.kind = ?'), params.push(kind));
-  if (from) (clauses.push('d.created_at >= ?'), params.push(from));
-  if (to) (clauses.push('d.created_at <= ?'), params.push(to));
-  if (projectId) (clauses.push('d.project_id = ?'), params.push(projectId));
-  if (input.task) (clauses.push('d.task_id = ?'), params.push(input.task));
+  const add = (clause: string, value: string) => {
+    clauses.push(clause);
+    params.push(value);
+  };
+  if (kind) add('d.kind = ?', kind);
+  if (from) add('d.created_at >= ?', from);
+  if (to) add('d.created_at <= ?', to);
+  if (projectId) add('d.project_id = ?', projectId);
+  if (input.task) add('d.task_id = ?', input.task);
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
   const limit = Math.max(1, Math.min(1000, input.limit ?? 300));
   const total = db.get<{ n: number }>(`SELECT count(*) AS n FROM decisions d${where}`, ...params)?.n ?? 0;

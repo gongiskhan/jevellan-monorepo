@@ -73,7 +73,7 @@ function run(projectId: string, made: Made, ordinal: number, provider = 'claude-
 }
 
 const ekoa = store.createProject({ name: 'ekoa-code', path: '/Users/owner/dev/ekoa-code', default_branch: 'main' }).row;
-store.createProject({ name: 'quiet', path: '/Users/owner/dev/quiet', default_branch: 'main' }).row;
+store.createProject({ name: 'quiet', path: '/Users/owner/dev/quiet', default_branch: 'main' });
 const P = ekoa.id;
 
 // waiting on you: a needs-decision with options (step 3 of 4), a landing ask, a failed step with no question
@@ -140,7 +140,7 @@ function ended(title: string, state: 'done' | 'failed' | 'stopped', endedAt: str
   return t.id;
 }
 const landed = ended('Landed one', 'done', '2026-11-01T06:32:00Z');
-const landedEarly = ended('Landed early', 'done', '2026-10-31T19:00:00Z');
+ended('Landed early', 'done', '2026-10-31T19:00:00Z');
 ended('Done yesterday', 'done', '2026-10-31T17:30:00Z');
 const failed = ended('Failed one', 'failed', '2026-10-31T17:00:00Z');
 const stopped = ended('Stopped one', 'stopped', '2026-11-01T08:00:00Z');
@@ -158,7 +158,7 @@ describe('jv status text', () => {
 
   test('the block: bot line, projects with their path, the three groups, landed and failed', () => {
     const expected = [
-      `bot: alive 4 s ago (pid ${process.pid}) · running 2/4 · queued 2`,
+      `bot: alive 4 s ago (pid ${process.pid}) · running 3/4 · queued 2`,
       'ekoa-code (/Users/owner/dev/ekoa-code)',
       '  waiting on you',
       // oldest wait first; columns aligned within the group, whose title column narrows until every line fits in
@@ -198,7 +198,7 @@ describe('jv status text', () => {
     assert.equal(view.bot.heartbeatAgeSeconds, 4);
     assert.equal(view.bot.tick, 7);
     assert.equal(view.bot.startedAt, at('2026-11-01T10:00:00Z'));
-    assert.equal(view.bot.running, 2);
+    assert.equal(view.bot.running, 3, 'three tasks in state running, the lost one included (M-013)');
     assert.equal(view.bot.queued, 2);
     assert.deepEqual(view.bot.limits, { perProject: 2, total: 4 });
   });
@@ -206,7 +206,7 @@ describe('jv status text', () => {
   test('--project prints that project only; the bot line stays the machine\'s', () => {
     const v = S.statusView(store, { project: 'quiet', now: NOW, markLost: false });
     assert.deepEqual(S.formatStatus(store, v, { now: NOW, project: 'quiet' }).split('\n'), [
-      `bot: alive 4 s ago (pid ${process.pid}) · running 2/4 · queued 2`,
+      `bot: alive 4 s ago (pid ${process.pid}) · running 3/4 · queued 2`,
       'quiet (/Users/owner/dev/quiet)',
       '  landed today: none   failed: none',
     ]);
@@ -225,7 +225,7 @@ describe('the bot line', () => {
   const state = (now = NOW) => B.readBotState(store, now);
 
   test('alive: "bot: alive N s ago (pid P) · running r/total · queued q"', () => {
-    assert.equal(B.botLine(state(), NOW), `bot: alive 4 s ago (pid ${process.pid}) · running 2/4 · queued 2`);
+    assert.equal(B.botLine(state(), NOW), `bot: alive 4 s ago (pid ${process.pid}) · running 3/4 · queued 2`);
   });
 
   test('a stale heartbeat (60 s at the default 15 s tick) reads not running', () => {
@@ -241,7 +241,7 @@ describe('the bot line', () => {
     try {
       const s = state(NOW + 246_000);
       assert.equal(s.alive, true);
-      assert.equal(B.botLine(s, NOW + 246_000), `bot: alive 4 min ago (pid ${process.pid}) · running 2/3 · queued 2`);
+      assert.equal(B.botLine(s, NOW + 246_000), `bot: alive 4 min ago (pid ${process.pid}) · running 3/3 · queued 2`);
       assert.equal(state(NOW + 296_000).alive, false);
     } finally {
       rmSync(join(home, 'bot.json'));

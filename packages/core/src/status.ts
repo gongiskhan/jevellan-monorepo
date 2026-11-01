@@ -20,7 +20,7 @@
 // HH:MM, with the date when not today. A lost run keeps the lifted marker "LOST: jv task resume T".
 
 import { botLine, readBotState, type BotState } from './bot-state.js';
-import { markLost } from './launcher.js';
+import { markLostRuns } from './reconcile.js';
 import { findProvider, loadProviders, type ProvidersConfig } from './providers.js';
 import { reportView } from './report.js';
 import type { Store } from './store.js';
@@ -136,7 +136,8 @@ function sessionStatus(s: SessionRow, projectName: string, step: number | null):
 
 /** The status of every project (or one). Marks lost runs first. */
 export function statusView(store: Store, options: { project?: string; now?: number; markLost?: boolean } = {}): StatusView {
-  const lost = options.markLost === false ? [] : markLost(store).map((s) => s.id);
+  // jv status runs reconcile read-only: the marking of lost runs, nothing started (brief section 3).
+  const lost = options.markLost === false ? [] : markLostRuns(store);
   const now = options.now ?? Date.now();
   const project = options.project ? store.requireProject(options.project) : undefined;
   const names = new Map(store.listProjects().map((p) => [p.id, p.name]));

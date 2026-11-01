@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc -b --pretty false",
     "typecheck": "tsc -b --pretty false",
-    "test": "npm run build && npm test --workspaces --if-present",
+    "test": "npm run build && npm test --workspaces --if-present && node --test \"scripts/test/*.test.mjs\"",
     "lint": "eslint .",
     "scan:secrets": "node scripts/secret-scan.mjs",
     "journeys": "node acceptance/run-all.mjs"

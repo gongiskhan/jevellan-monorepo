@@ -4,9 +4,10 @@
 // half-written bot.json never stops a task: a missing file, an unreadable one or a missing field gives the
 // defaults (perProject 2, total 4).
 //
-// A task holds a slot while one of its step sessions is queued, starting or running (M-013): that is the work
-// that costs a model and a process. A task waiting on the owner, between steps, or landing without a verify run holds
-// none.
+// A task holds a slot while it is in state running (a step runs, or the next step is being placed between two runs)
+// or while one of its step sessions is queued, starting or running (a verify-then-land run of a landing task), M-013.
+// Counting the running state closes the window between a step's end and the next step's run, when the bot could
+// otherwise admit one task too many. A task waiting on the owner, queued, or landing without a verify run holds none.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,12 +52,14 @@ export interface SlotUse {
   tasks: string[];
 }
 
-/** The tasks that hold a slot now: one of their step sessions is queued, starting or running. */
+/** The tasks that hold a slot now: in state running, or with a step session queued, starting or running. */
 export function slotUse(store: Store): SlotUse {
   const rows = store.db
     .prepare(
-      `SELECT DISTINCT t.id AS id, t.project_id AS project_id FROM tasks t JOIN sessions s ON s.task_id = t.id
-       WHERE s.kind = 'step' AND s.state IN ('queued','starting','running') AND t.state NOT IN ('done','failed','stopped')`,
+      `SELECT t.id AS id, t.project_id AS project_id FROM tasks t
+       WHERE t.state = 'running'
+          OR (t.state NOT IN ('done','failed','stopped')
+              AND EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = t.id AND s.kind = 'step' AND s.state IN ('queued','starting','running')))`,
     )
     .all() as Array<{ id: string; project_id: string }>;
   const byProject: Record<string, number> = {};

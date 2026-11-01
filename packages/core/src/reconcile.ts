@@ -164,6 +164,22 @@ export async function flushPendingWakes(
   return typed;
 }
 
+/**
+ * Step 1 of reconcile, alone and synchronous: marks lost every starting or running session whose process is gone and
+ * that has no end event, plus a starting row without a pid older than 60 s, skipping tasks another process is
+ * starting. What `jv status` runs (reconcile read-only, brief section 3). Returns the ids marked.
+ */
+export function markLostRuns(store: Store, options: { alive?: (s: SessionRow) => boolean; now?: number; starting?: Set<string> } = {}): string[] {
+  const now = options.now ?? Date.now();
+  const starting = options.starting ?? tasksBeingStarted(store, now);
+  return markLost(store, {
+    ...(options.alive ? { alive: options.alive } : {}),
+    skip: (s) => s.task_id !== null && starting.has(s.task_id),
+    orphanAfterMs: STARTING_GRACE_MS,
+    now,
+  }).map((s) => s.id);
+}
+
 /** One reconciliation of the store (see the header). Never throws for a failing sub-step: it is in `errors`. */
 export async function reconcile(store: Store, limits: Limits = readLimits(), options: ReconcileOptions = {}): Promise<ReconcileSummary> {
   const summary: ReconcileSummary = { lost: [], resumed: [], recovered: [], admitted: [], refused: [], delivered: [], woke: 0, errors: [] };
@@ -189,13 +205,7 @@ export async function reconcile(store: Store, limits: Limits = readLimits(), opt
   let starting = new Set<string>();
   try {
     starting = tasksBeingStarted(store, now());
-    const marked = markLost(store, {
-      alive: d.alive,
-      skip: (s) => s.task_id !== null && starting.has(s.task_id),
-      orphanAfterMs: STARTING_GRACE_MS,
-      now: now(),
-    });
-    summary.lost.push(...marked.map((s) => s.id));
+    summary.lost.push(...markLostRuns(store, { alive: d.alive, now: now(), starting }));
   } catch (error) {
     summary.errors.push({ step: 'lost', message: message(error) });
   }

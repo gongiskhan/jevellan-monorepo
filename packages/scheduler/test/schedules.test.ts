@@ -16,7 +16,7 @@ const S = await import('../src/schedules.js');
 after(() => rmSync(home, { recursive: true, force: true }));
 const store = openStore();
 after(() => store.close());
-const project = store.createProject({ name: 'sandbox', path: join(home, 'repo'), default_branch: 'main' }).row;
+store.createProject({ name: 'sandbox', path: join(home, 'repo'), default_branch: 'main' });
 
 type Call = { requestId?: string; title: string; origin?: string; project: string; kind: string; duty?: string };
 const calls: Call[] = [];

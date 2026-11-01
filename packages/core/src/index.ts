@@ -212,7 +212,11 @@ export {
 
 // ---- the coordinator, wake lines, handoff and notes -------------------------------------------------------------
 
-export * as coordinator from './coordinator.js';
+import * as coordinatorModule from './coordinator.js';
+import { coordinatorTranscript, messageCoordinator, tailCoordinator } from './coordinator-chat.js';
+/** The coordinator module, with the conversation as the brief names it: coordinator.tail, .message, .transcript. */
+export const coordinator = { ...coordinatorModule, tail: tailCoordinator, message: messageCoordinator, transcript: coordinatorTranscript };
+export * as coordinatorChat from './coordinator-chat.js';
 export * as wake from './wake.js';
 export { notifyCoordinator } from './wake.js';
 export { buildHandoff, formatHandoff, type Handoff } from './handoff.js';
@@ -228,3 +232,20 @@ export { bootstrap, readInstall, type BootstrapOptions, type BootstrapSummary, t
 // ---- contracts ----------------------------------------------------------------------------------------------------
 
 export * from './contracts/index.js';
+
+// ---- monorepo additions: reconcile, changes, the bot's state, jobs, memory, worker tools ----------------------------
+
+export { flushPendingWakes, markLostRuns, reconcile, tasksBeingStarted, type ReconcileOptions, type ReconcileSummary } from './reconcile.js';
+export { formatChanges, formatChangesStat, taskChanges, type TaskChanges } from './changes.js';
+export { admitTask, listTaskSummaries, recoverLostRun, taskOrigin, type TaskSummary } from './tasks.js';
+export { BOT_META, botLine, readBotState, writeBotHeartbeat, type BotState } from './bot-state.js';
+export { cancelJob, createJob, jobView, localDay, stepJobs, type JobHandler, type StepSummary, type WorkTaskSpec } from './jobs.js';
+export { MEMORY_BLOCK_HEADING, memoryApi, memoryBlock, registerMemory, type MemoryApi } from './memory-port.js';
+export { qualifiedToolName, WORKER_TOOLS_QUALIFIED, workerTools, type WorkerTool } from './tools/index.js';
+
+// The brief's names for the session functions (section 3), aliases of the lifted ones: a step's session starts through
+// startStep, a stopped, lost or waiting one is resumed (and an owner retry made) through resumeTask, a run stops through
+// stopRun.
+export { startStep as startSession } from './advance.js';
+export { resumeTask as resumeSession, resumeTask as retry } from './tasks.js';
+export { stopRun as stopSession } from './launcher.js';
