@@ -6,9 +6,8 @@
 
 import type { CommandIo, ParsedArgs } from '../command.js';
 import { flagBool, requirePositional } from '../command.js';
-import { EXIT } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
-import { formatLandResult, landTask } from 'jevellan-core/land';
+import { formatLandResult, landExitCode, landTask, landView } from 'jevellan-core/land';
 import { openStore } from 'jevellan-core/store';
 
 export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
@@ -18,9 +17,8 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
   try {
     if (!io.json) io.info(force ? `Landing ${id} (forced by the owner)...` : `Deciding how ${id} lands...`);
     const result = await landTask(store, id, { force });
-    const landing = result.landingId ? store.getLanding(result.landingId) : undefined;
-    io.result({ ...result, ...(landing ? { landing } : {}) }, () => formatLandResult(result));
-    return result.state === 'failed' || result.state === 'refused' ? EXIT.refused : EXIT.ok;
+    io.result(landView(store, result), () => formatLandResult(result));
+    return landExitCode(result);
   } finally {
     store.close();
   }

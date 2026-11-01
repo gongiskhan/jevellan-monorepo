@@ -32,6 +32,7 @@
   "dependencies": {
     "jevellan-core": "0.1.0",
     "jevellan-improver": "0.1.0",
+    "jevellan-mcp": "0.1.0",
     "jevellan-memory": "0.1.0",
     "jevellan-planner": "0.1.0",
     "jevellan-ui": "0.1.0"

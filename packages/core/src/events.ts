@@ -7,6 +7,10 @@
 // - `usage` events add their tokens and cost to the session's counters; `rate-limit` events are also written to
 //   provider_usage with source `stream`, under the session's provider. Both in the event's transaction.
 // - tailEvents reads a session's events from the store (the tail() of every runtime module).
+// - eventView is one event as `jv tail S --json` prints it (one object per line); tailPage is a bounded page of them
+//   for callers that want one JSON object (the control MCP's jv_tail and the UI, brief section 5): at most
+//   TAIL_PAGE_MAX events after `sinceSeq`, every string of a payload cut to TAIL_TEXT_MAX characters (the event
+//   then says `truncated: true`), with the seq to continue from and whether more events follow.
 
 import { defaultRedactor, type Redactor } from './redact.js';
 import type { Store, UsageDelta } from './store.js';
@@ -192,4 +196,56 @@ export async function* tailEvents(store: Store, sessionId: string, sinceSeq = 0,
     await sleep(pollMs, options.signal);
     options.onPoll?.();
   }
+}
+
+// ---- views ---------------------------------------------------------------------------------------------------
+
+/** One event as `jv tail S --json` prints it: the payload parsed (its text when it is not JSON). */
+export interface EventView {
+  session: string;
+  seq: number;
+  at: string;
+  kind: EventKind;
+  payload: unknown;
+  /** Set by tailPage when a payload string was cut. */
+  truncated?: true;
+}
+
+export function eventView(row: EventRow): EventView {
+  let payload: unknown = row.payload;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    // keep the text
+  }
+  return { session: row.session_id, seq: row.seq, at: row.at, kind: row.kind, payload };
+}
+
+/** The most events one tailPage returns (brief section 5: jv_tail returns at most 200 events). */
+export const TAIL_PAGE_MAX = 200;
+/** Every payload string of a tailPage is cut to this many characters (brief section 5). */
+export const TAIL_TEXT_MAX = 2000;
+
+export interface TailPage {
+  session: string;
+  sinceSeq: number;
+  events: EventView[];
+  /** The seq to pass as sinceSeq for the next page (sinceSeq when the page is empty). */
+  nextSeq: number;
+  /** More events follow nextSeq. */
+  more: boolean;
+}
+
+/** A page of a session's events after `sinceSeq` (default 0): at most `limit` (default and cap TAIL_PAGE_MAX). */
+export function tailPage(store: Store, sessionId: string, options: { sinceSeq?: number; limit?: number } = {}): TailPage {
+  const sinceSeq = Math.max(0, Math.floor(options.sinceSeq ?? 0));
+  const limit = Math.min(TAIL_PAGE_MAX, Math.max(1, Math.floor(options.limit ?? TAIL_PAGE_MAX)));
+  const rows = store.listEvents(sessionId, { afterSeq: sinceSeq, limit: limit + 1 });
+  const page = rows.slice(0, limit);
+  const events = page.map((row) => {
+    const view = eventView(row);
+    const cut = trimStrings(view.payload, TAIL_TEXT_MAX);
+    return cut.truncated ? { ...view, payload: cut.value, truncated: true as const } : view;
+  });
+  return { session: sessionId, sinceSeq, events, nextSeq: page.at(-1)?.seq ?? sinceSeq, more: rows.length > limit };
 }

@@ -1,11 +1,18 @@
-// The jevellan-mcp server (brief section 5): one McpServer over the operations table (ops.ts), served over stdio (what
-// `claude mcp add jv -- ~/.jv/bin/jv mcp` starts) or Streamable HTTP in stateless mode (a new transport per request)
-// on 127.0.0.1:7072 at /mcp, with `Authorization: Bearer <token>` required on every request (401 and no body
-// otherwise) and GET /health open. Nothing else is served. HTTPS is the owner's `tailscale serve`, not this package's.
+// The jevellan-mcp server (brief section 5): one McpServer over the operations table (tools.ts), served over stdio
+// (what `claude mcp add jv -- ~/.jv/bin/jv mcp` starts) or Streamable HTTP in stateless mode (a new server and
+// transport per request, sessionIdGenerator undefined, JSON responses) on 127.0.0.1:7072 at /mcp, with
+// `Authorization: Bearer <token>` required on every request (401 and no body otherwise) and GET /health open. Nothing
+// else is served (404); GET and DELETE /mcp answer 405, since a stateless server has no stream or session to offer.
+// HTTPS is the owner's `tailscale serve`, not this package's.
 //
-// Each tool returns the operation's text and its JSON as structuredContent; a refusal is an error result with
-// {error, exitCode}, the shape `jv ... --json` prints. One line per call goes to ~/.jv/logs/mcp.log: time, tool, the
-// project and task ids, duration and exit code; never arguments, never results.
+// The server's instructions are serverInstructions() (the coordinator skill's "How you work" with the tool names), its
+// resources jv://status, jv://tasks/{id} and jv://sessions/{id}/report. Each tool returns the operation's text and its
+// JSON as structuredContent; a refusal is an error result with {error, exitCode}, the shape `jv ... --json` prints,
+// and a result whose jv command exits non-zero while printing its JSON (jv land refused or failed, jv doctor with a
+// FAIL) is an error result with that JSON. Arguments the tool's schema refuses are the SDK's own error result
+// (InvalidParams, before the tool runs), so they never reach the operation and are not logged. One line per tool call
+// goes to ~/.jv/logs/mcp.log: time, tool, the project and task ids, duration and exit code; never arguments, never
+// results.
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -20,24 +27,20 @@ import { JvError, refused } from 'jevellan-core/errors';
 import { paths } from 'jevellan-core/paths';
 import { redact } from 'jevellan-core/redact';
 import { packageVersion } from 'jevellan-core/version';
-import { loggedIds, type Operation, type OpContext } from './ops.js';
+import { serverInstructions } from './instructions.js';
+import { loggedIds, type Operation, type OpContext, type ResourceDef } from './ops.js';
+import { operations as allOperations, resources as allResources } from './tools.js';
 
 export const SERVER_NAME = 'jevellan';
 export const DEFAULT_MCP_PORT = 7072;
 export const DEFAULT_MCP_BIND = '127.0.0.1';
 
-/** A read-only resource: a URI (or template) whose JSON is an operation's output. */
-export interface ResourceDef {
-  name: string;
-  /** A fixed URI (jv://status) or a template (jv://tasks/{id}). */
-  uri: string;
-  description: string;
-  read(params: Record<string, string>): Promise<Record<string, unknown>> | Record<string, unknown>;
-}
-
 export interface ServerOptions {
-  operations: readonly Operation[];
+  /** Default: every tool of section 5 (tools.ts). */
+  operations?: readonly Operation[];
+  /** Default: jv://status, jv://tasks/{id}, jv://sessions/{id}/report (tools.ts). */
   resources?: readonly ResourceDef[];
+  /** Default: serverInstructions() (the installed coordinator skill). */
   instructions?: string;
   /** Where the call log goes (default ~/.jv/logs/mcp.log). */
   logFile?: string;
@@ -67,20 +70,22 @@ function logCall(file: string, tool: string, input: unknown, ms: number, exitCod
 }
 
 /** An McpServer with every operation as a tool and the resources, ready to connect to a transport. */
-export function createMcpServer(options: ServerOptions): McpServer {
+export function createMcpServer(options: ServerOptions = {}): McpServer {
+  const instructions = options.instructions ?? serverInstructions();
   const server = new McpServer(
     { name: SERVER_NAME, version: packageVersion() },
-    { capabilities: { tools: {}, resources: {} }, ...(options.instructions ? { instructions: options.instructions } : {}) },
+    { capabilities: { tools: {}, resources: {} }, ...(instructions ? { instructions } : {}) },
   );
   const logFile = options.logFile ?? mcpLogFile();
   const ctx: OpContext = options.context ?? { origin: 'mcp' };
-  for (const op of options.operations) {
+  for (const op of options.operations ?? allOperations) {
     server.registerTool(op.name, { description: op.description, inputSchema: op.input }, (async (args: unknown) => {
       const started = Date.now();
       let exitCode = 0;
       try {
         const r = await op.run(op.input.parse(args ?? {}), ctx);
-        return { content: [{ type: 'text' as const, text: r.text }], structuredContent: r.data };
+        exitCode = r.exitCode ?? 0;
+        return { content: [{ type: 'text' as const, text: r.text }], structuredContent: r.data, ...(exitCode ? { isError: true } : {}) };
       } catch (error) {
         exitCode = error instanceof JvError ? error.exitCode : 1;
         const message = redact(error instanceof Error ? error.message : String(error));
@@ -90,7 +95,7 @@ export function createMcpServer(options: ServerOptions): McpServer {
       }
     }) as never);
   }
-  for (const r of options.resources ?? []) {
+  for (const r of options.resources ?? allResources) {
     const read = async (uri: URL, params: Record<string, string>) => {
       const data = await r.read(params);
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(data, null, 2) }] };
@@ -107,7 +112,7 @@ export function createMcpServer(options: ServerOptions): McpServer {
 }
 
 /** Serves stdio until the client closes it. */
-export async function serveStdio(options: ServerOptions): Promise<void> {
+export async function serveStdio(options: ServerOptions = {}): Promise<void> {
   const server = createMcpServer(options);
   const transport = new StdioServerTransport();
   const closed = new Promise<void>((resolve) => {
@@ -212,6 +217,8 @@ function empty(res: ServerResponse, status: number): void {
 export async function startHttp(options: HttpOptions): Promise<RunningHttp> {
   const bind = validateMcpBind(options.bind ?? DEFAULT_MCP_BIND);
   const version = packageVersion();
+  // Read once: every request builds its own server from these options (stateless mode).
+  const serverOptions: HttpOptions = { ...options, instructions: options.instructions ?? serverInstructions() };
   const http = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0];
     if (path === '/health' && req.method === 'GET') {
@@ -222,15 +229,20 @@ export async function startHttp(options: HttpOptions): Promise<RunningHttp> {
     }
     if (path !== '/mcp') return empty(res, 404);
     if (!sameToken(req.headers.authorization, options.token)) return empty(res, 401);
+    if (req.method !== 'POST') {
+      res.writeHead(405, { allow: 'POST', 'content-length': '0' });
+      res.end();
+      return;
+    }
     void (async () => {
-      const server = createMcpServer(options);
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const server = createMcpServer(serverOptions);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on('close', () => {
         void transport.close();
         void server.close();
       });
       try {
-        const body = req.method === 'POST' ? await readBody(req) : undefined;
+        const body = await readBody(req);
         await server.connect(transport);
         await transport.handleRequest(req as IncomingMessage & { auth?: never }, res, body);
       } catch {
@@ -239,17 +251,27 @@ export async function startHttp(options: HttpOptions): Promise<RunningHttp> {
       }
     })();
   });
+  const port = options.port ?? DEFAULT_MCP_PORT;
   await new Promise<void>((resolve, reject) => {
-    http.once('error', reject);
-    http.listen(options.port ?? DEFAULT_MCP_PORT, bind, () => resolve());
+    http.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') reject(refused(`port ${port} on ${bind} is in use; give another with --port`));
+      else if (error.code === 'EACCES') reject(refused(`port ${port} on ${bind} needs privileges this process lacks; give another with --port`));
+      else reject(error);
+    });
+    http.listen(port, bind, () => resolve());
   });
   const address = http.address();
-  const port = typeof address === 'object' && address ? address.port : (options.port ?? DEFAULT_MCP_PORT);
+  const actual = typeof address === 'object' && address ? address.port : port;
+  const host = bind.includes(':') ? `[${bind}]` : bind;
   return {
-    url: `http://${bind}:${port}/mcp`,
-    port,
+    url: `http://${host}:${actual}/mcp`,
+    port: actual,
     bind,
     server: http,
-    close: () => new Promise((resolve) => http.close(() => resolve())),
+    close: () =>
+      new Promise((resolve) => {
+        http.close(() => resolve());
+        http.closeAllConnections();
+      }),
   };
 }

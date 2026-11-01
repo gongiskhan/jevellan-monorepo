@@ -407,3 +407,27 @@ its own savepoint, so one bad operation never loses the others. The plan task's 
 improver's inputs leave out the jobs' own work tasks (request id `job:`) but keep the tasks a plan created. jevellan-cli
 depends on jevellan-planner and jevellan-improver for `jv job run` and `jv improve`; a job cancelled today keeps its
 request id, so `jv job run` of that kind returns it with exit 0 until `--force`.
+
+## M-043 The control MCP
+
+- Tools: the 34 of section 5 in `packages/mcp/src/tools.ts`, each with a zod 4 input (SDK 1.32.2 takes them as they
+  are) and data equal to the matching `jv ... --json`. Where a lifted command built its JSON in the command module,
+  the building moved into core (`createdTaskView`, `landView`, `sessionReport`, `eventView`/`tailPage`,
+  `usageReport`) and both call it; where it lives in a cli module (doctor, memory, bot status) `views.ts` copies it and
+  the tests compare both on one store. `jv_goal_done` and `jv_job_run` call the same functions as `jv goal done` and
+  `jv job run` (M-042). `jv_job_run` also takes `force`.
+- Structured content is always one object (`jv_project_list` is `{projects}`; `jv_tail` a bounded page of at most 200
+  events after `sinceSeq`, payload strings cut to 2000 characters with `truncated: true`, plus `nextSeq` and `more`).
+  A command that exits non-zero while it prints JSON (`jv land` refused, `jv doctor` with a FAIL) is an error result
+  that keeps the JSON as structured content; a thrown refusal is `{error, exitCode}`; arguments the schema refuses
+  get the SDK's own InvalidParams result before the tool runs.
+- `mutates` marks what `jv ui --readonly` refuses; `jv_status` (marks lost runs) and `jv_coordinator_transcript`
+  (tails first) count as reads.
+- stdio keeps no pid file (every client starts its own server); only `jv mcp --http` holds `$JV_HOME/run/mcp.pid`.
+  HTTP is stateless with JSON responses (a new server and transport per POST /mcp; GET and DELETE /mcp answer 405), a
+  missing or wrong bearer token is 401 with an empty body, GET /health is open, everything else 404. The token is
+  written before the port is bound, printed once in text mode only, and `--token-reset` is refused while an HTTP
+  server runs.
+- M9's Claude Code session runs with HOME a folder of the run and claude-main's token of the temporary home in its
+  environment: with the owner's own login it would record the run's folder in the owner's `~/.claude.json`, which
+  brief section 1 says jv never writes.

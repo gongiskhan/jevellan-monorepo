@@ -4,7 +4,7 @@
 
 import type { CommandIo, ParsedArgs } from '../command.js';
 import { flagBool, flagInt, requirePositional } from '../command.js';
-import { tailEvents } from 'jevellan-core/events';
+import { eventView, tailEvents } from 'jevellan-core/events';
 import { normalizeId } from 'jevellan-core/ids';
 import { markLost } from 'jevellan-core/launcher';
 import { openStore } from 'jevellan-core/store';
@@ -77,15 +77,8 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
       signal: controller.signal,
       onPoll: () => markLost(store),
     })) {
-      if (io.json) {
-        let payload: unknown = row.payload;
-        try {
-          payload = JSON.parse(row.payload);
-        } catch {
-          // keep the text
-        }
-        io.write(`${JSON.stringify({ session: row.session_id, seq: row.seq, at: row.at, kind: row.kind, payload })}\n`);
-      } else io.write(`${formatEvent(row)}\n`);
+      if (io.json) io.write(`${JSON.stringify(eventView(row))}\n`);
+      else io.write(`${formatEvent(row)}\n`);
     }
     return 0;
   } finally {

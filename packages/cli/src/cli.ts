@@ -70,6 +70,11 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
   },
   job: { module: './commands/job.js', booleans: ['force'], usage: 'jv job run <kind> --project N [--force] | jv job list [--project N] | jv job show|cancel J' },
   improve: { module: './commands/improve.js', booleans: ['force'], usage: 'jv improve memory|docs|skills --project N [--force]' },
+  mcp: {
+    module: './commands/mcp.js',
+    booleans: ['stdio', 'http', 'token-reset'],
+    usage: 'jv mcp [--stdio] [--http [--port 7072] [--bind 127.0.0.1]] [--token-reset]',
+  },
   version: { module: './commands/version.js', usage: 'jv --version', internal: true },
 
   bootstrap: { module: './commands/bootstrap.js', usage: 'jv bootstrap [--skills PATH] [--node PATH]', internal: true },

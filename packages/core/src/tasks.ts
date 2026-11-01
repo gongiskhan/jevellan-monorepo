@@ -33,6 +33,9 @@
 // the step placed again when the run never got a native session).
 //
 // jv task list: listTaskSummaries() and formatTaskList(), newest first, with origin; text times are local.
+//
+// JSON shared by the command and the control MCP (brief section 5: a tool's structured content equals `jv ...
+// --json`): createdTaskView() is what jv task create prints, taskView() what jv task show prints.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -494,6 +497,29 @@ export async function createTask(store: Store, input: CreateTaskInput, deps: Par
   const admitted = await admitTask(store, task.id, { reason: 'task created', deps: d });
   if (admitted.state === 'refused') throw queuedRefusal(task.id, admitted.reason ?? 'Jev refused');
   return result(admitted.start, admitted.questions);
+}
+
+/** What `jv task create --json` prints and the jv_task_create tool returns (the result without the worktree). */
+export interface CreatedTaskView {
+  task: TaskRow;
+  steps: StepRow[];
+  created: boolean;
+  workflow: { source: string; name: string };
+  questions?: CreateTaskResult['questions'];
+  start?: StartStepResult;
+  warnings: string[];
+}
+
+export function createdTaskView(r: CreateTaskResult): CreatedTaskView {
+  return {
+    task: r.task,
+    steps: r.steps,
+    created: r.created,
+    workflow: r.workflow,
+    ...(r.questions ? { questions: r.questions } : {}),
+    ...(r.start ? { start: r.start } : {}),
+    warnings: r.warnings,
+  };
 }
 
 // ---- jv task show -----------------------------------------------------------------------------------------------
