@@ -90,3 +90,19 @@ test('jv tail and jv report read a finished run (text and --json)', async () => 
   assert.equal(none.status, 3);
   assert.equal(cli('tail', 'RZZZZZZ').status, 3);
 });
+
+test('jv tail masks a known secret in a row stored before masking (text and --json)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { FAKE_TOKEN } = await import('./fixtures/run-fixture.js');
+  const s = seedTask(store, home, { name: 'seventh' });
+  const run = newRun({ taskId: s.taskId, stepId: s.stepIds[0]! });
+  // Written straight into the table, as a row from before M-083 or before the secret file existed would be.
+  store.db.prepare("INSERT INTO events (session_id, seq, at, kind, payload) VALUES (?, 1, ?, 'text', ?)").run(run.id, new Date().toISOString(), JSON.stringify({ text: `the key is ${FAKE_TOKEN}` }));
+  const cli = (...argv: string[]) =>
+    spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', entry, ...argv], { env: { ...process.env, JV_HOME: home }, encoding: 'utf8' });
+  for (const out of [cli('tail', run.id), cli('tail', run.id, '--json')]) {
+    assert.equal(out.status, 0, out.stderr);
+    assert.ok(!out.stdout.includes(FAKE_TOKEN), 'jv tail printed the secret');
+    assert.match(out.stdout, /the key is \[redacted\]/);
+  }
+});

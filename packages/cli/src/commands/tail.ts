@@ -1,11 +1,13 @@
 // jv tail S [--follow]: prints a session's events. Text: one line per event. --json: one JSON object per line
 // ({seq, at, kind, payload}). --follow keeps reading until the session's end event (or it is lost). Lost runs are
-// marked at read time (launcher.markLost).
+// marked at read time (launcher.markLost). Every line passes the redactor on the way out, as the MCP and the UI do
+// (M-084): rows stored before a secret file existed, or before M-083, never print a known value.
 
 import type { CommandIo, ParsedArgs } from '../command.js';
 import { flagBool, flagInt, requirePositional } from '../command.js';
 import { eventView, tailEvents } from 'jevellan-core/events';
 import { normalizeId } from 'jevellan-core/ids';
+import { redact, redactValue } from 'jevellan-core/redact';
 import { markLost } from 'jevellan-core/launcher';
 import { openStore } from 'jevellan-core/store';
 import type { EventRow } from 'jevellan-core/types';
@@ -77,8 +79,8 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
       signal: controller.signal,
       onPoll: () => markLost(store),
     })) {
-      if (io.json) io.write(`${JSON.stringify(eventView(row))}\n`);
-      else io.write(`${formatEvent(row)}\n`);
+      if (io.json) io.write(`${JSON.stringify(redactValue(eventView(row)))}\n`);
+      else io.write(`${redact(formatEvent(row))}\n`);
     }
     return 0;
   } finally {
