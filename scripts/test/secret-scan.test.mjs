@@ -132,6 +132,26 @@ test('--values-from finds the exact values of key files without printing them', 
   assert.equal(run([], dir).code, 0, 'without the flag no value is looked for');
 });
 
+test('--values-from takes a file too (the UI password next to the store), and reads NAME=value lines as the redactor does', () => {
+  const password = 'fakeuipasswordabcdef';
+  const dir = repo({ 'docs/notes.md': `the password was ${password} yesterday\n`, 'b.md': 'quoted made-up-quoted-value-1234 and exported made-up-exported-value-5678\n' });
+  const home = join(base, `home-${++count}`);
+  mkdirSync(home);
+  writeFileSync(join(home, 'ui-password'), `${password}\n`);
+  assert.deepEqual(valuesFrom(join(home, 'ui-password')), [password]);
+  const result = run(['--values-from', join(home, 'ui-password')], dir);
+  assert.equal(result.code, 1, result.err);
+  assert.match(result.err, /docs\/notes\.md:1: a value from --values-from/);
+  assert.ok(!result.err.includes(password) && !result.out.includes(password));
+  // export and one pair of matching quotes are stripped, as redact.ts valuesOf does (D-014).
+  writeFileSync(join(home, 'env'), 'export EXPORTED=made-up-exported-value-5678\nQUOTED="made-up-quoted-value-1234"\n');
+  const values = valuesFrom(join(home, 'env'));
+  assert.ok(values.includes('made-up-exported-value-5678'), 'export NAME=value gives the bare value');
+  assert.ok(values.includes('made-up-quoted-value-1234'), 'NAME="value" gives the bare value');
+  assert.equal(scanFiles(dir, { values }).length, 1);
+  assert.equal(run(['--values-from', join(home, 'missing')], dir).code, 2, 'a path that does not exist cannot be scanned');
+});
+
 test('--history finds a secret that a later commit removed', () => {
   const value = fakes['JWT shape'];
   const dir = repo({ 'a.txt': 'clean\n', 'old/session.txt': `token: ${value}\n` });

@@ -9,10 +9,16 @@
 // - Only public display fields are projected, as in the original: no encrypted reasoning, no native credentials.
 // - claudeTurnUsage sums the usage of a turn's API calls. Claude Code writes one transcript record per content block,
 //   every one of them carrying its message's id and the same usage, so usage is counted once per message id.
+// - transcriptEvents masks tool inputs and outputs with the caller's redactor before it cuts them to TOOL_TEXT_MAX
+//   (events.redactedTrim): a secret that crosses the cut would otherwise leave its first part in the event.
 
 import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { redactedTrim, TOOL_TEXT_MAX } from './events.js';
+import type { Redactor } from './redact.js';
+
+export { TOOL_TEXT_MAX };
 
 export type NativeRuntime = 'claude' | 'codex';
 
@@ -422,13 +428,6 @@ export function claudeTurnUsage(records: readonly NativeRecord[]): TurnUsage {
   return c.total();
 }
 
-export const TOOL_TEXT_MAX = 4000;
-
-function trimmed(text: string, max = TOOL_TEXT_MAX): { text: string; truncated?: true } {
-  const chars = [...text];
-  return chars.length <= max ? { text } : { text: chars.slice(0, max).join(''), truncated: true };
-}
-
 export type TranscriptEvent =
   | { kind: 'text' | 'thinking'; payload: { text: string; at?: string } }
   | { kind: 'tool-call'; payload: { id: string; name: string; input: string; inputTruncated?: true } }
@@ -436,10 +435,11 @@ export type TranscriptEvent =
 
 /**
  * The jv events of parsed turns: assistant text and thinking, tool calls and their results (inputs and outputs
- * trimmed to 4000 characters). User text (the typed prompt, hook feedback) is not an event: jv records what it
- * typed itself. A tool result that arrives in a later chunk than its call is an event of its own.
+ * masked with `redactor`, then trimmed to 4000 characters). User text (the typed prompt, hook feedback) is not an
+ * event: jv records what it typed itself. A tool result that arrives in a later chunk than its call is an event of
+ * its own.
  */
-export function transcriptEvents(turns: readonly TranscriptTurn[]): TranscriptEvent[] {
+export function transcriptEvents(turns: readonly TranscriptTurn[], redactor: Pick<Redactor, 'redact'>): TranscriptEvent[] {
   const out: TranscriptEvent[] = [];
   for (const turn of turns) {
     for (const block of turn.blocks) {
@@ -448,11 +448,11 @@ export function transcriptEvents(turns: readonly TranscriptTurn[]): TranscriptEv
         continue;
       }
       if (block.name !== 'Tool result') {
-        const t = trimmed(block.input);
+        const t = redactedTrim(redactor, block.input, TOOL_TEXT_MAX);
         out.push({ kind: 'tool-call', payload: { id: block.id, name: block.name, input: t.text, ...(t.truncated ? { inputTruncated: true as const } : {}) } });
       }
       if (block.output !== undefined) {
-        const t = trimmed(block.output);
+        const t = redactedTrim(redactor, block.output, TOOL_TEXT_MAX);
         out.push({
           kind: 'tool-result',
           payload: { id: block.id, ok: block.state !== 'failed', output: t.text, ...(t.truncated ? { outputTruncated: true as const } : {}) },

@@ -9,7 +9,7 @@
 //   must be an object, so the tool wraps them as {projects}.
 // - jv memory search|add|archive|list (packages/cli/src/commands/memory.ts): {query, scopes, memories}, {id, created,
 //   memory}, {memory}, {memories}. Writes through MCP have source 'mcp' (section 6); a write to a project's scope
-//   regenerates ~/.jv/projects/<name>/memory.md.
+//   regenerates ~/.jv/projects/<name>/memory.md. The text of an add is masked for known secrets before it is stored.
 // - jv bot status (the bot's command, brief section 8): {bot: readBotState, config: bot.json read leniently over the
 //   defaults of section 8, service: {file, installed}}; the bot's command builds the same object.
 
@@ -17,6 +17,7 @@ import { runChecks, type CheckResult, type DoctorDeps } from 'jevellan-core/doct
 import { JvError, notFound, refused } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
 import { paths } from 'jevellan-core/paths';
+import { redact } from 'jevellan-core/redact';
 import type { Store } from 'jevellan-core/store';
 import * as memory from 'jevellan-memory';
 
@@ -106,7 +107,8 @@ export function memoryAdd(store: Store, input: MemoryAddInput, source: string): 
     project = memoryProject(store, input.project);
   }
   const scope = project ? memory.projectScope(project) : memory.GLOBAL_SCOPE;
-  const r = asJv(() => memory.remember(store.db, { scope, kind: input.kind, text: input.text, tags: input.tags ?? [], source }));
+  // Masked for known secrets before it is stored, as jv_remember does (jevellan-memory cannot import the redactor).
+  const r = asJv(() => memory.remember(store.db, { scope, kind: input.kind, text: redact(input.text), tags: input.tags ?? [], source }));
   writeMemoryFile(store, scope);
   return { ...r, memory: memory.get(store.db, r.id)! };
 }

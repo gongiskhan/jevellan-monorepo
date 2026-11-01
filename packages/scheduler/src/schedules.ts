@@ -4,8 +4,10 @@
 // request id is `schedule:<id>:<next_run_at>`, so a tick that runs twice creates nothing twice. A schedule missed while
 // the bot was down fires once at the next tick, not once per missed slot, and says "fired late (missed HH:MM)".
 // `run` fires now without moving next_run_at; pause and resume flip enabled (resume recomputes the next run from now).
+// A task schedule's title and text are masked for known secrets before spec_json is written.
 
 import { JvError, refused, notFound } from 'jevellan-core/errors';
+import { redact } from 'jevellan-core/redact';
 import type { Store } from 'jevellan-core/store';
 import { createTask, type CreateTaskInput } from 'jevellan-core/tasks';
 import { JOB_KINDS, TASK_KINDS, type JobKind, type ProjectRow, type ScheduleRow, type TaskKind } from 'jevellan-core/types';
@@ -54,12 +56,13 @@ function checkTaskSpec(spec: Partial<TaskSpec> | undefined): TaskSpec {
   if (!spec.kind || !(TASK_KINDS as readonly string[]).includes(spec.kind)) throw refused(`--task-kind is one of ${TASK_KINDS.join(', ')}`);
   if (spec.kind === 'single' && !spec.duty) throw refused('a single task needs --duty');
   if (spec.kind !== 'single' && spec.duty) throw refused('--duty is only for --task-kind single');
-  const title = (spec.title ?? '').replace(/\s+/g, ' ').trim();
+  // Title and text are masked for known secrets before spec_json is written, as a task's are when it is created.
+  const title = redact(spec.title ?? '').replace(/\s+/g, ' ').trim();
   if (title === '') throw refused('a task schedule needs --title');
   if ([...title].length > TITLE_MAX - TITLE_DATE_SUFFIX_LENGTH) {
     throw refused(`the title is longer than ${TITLE_MAX - TITLE_DATE_SUFFIX_LENGTH} characters (the run date is added to it)`);
   }
-  const text = spec.text ?? '';
+  const text = redact(spec.text ?? '');
   if (text.trim() === '') throw refused('a task schedule needs --text');
   if ([...text].length > TEXT_MAX) throw refused(`the text is longer than ${TEXT_MAX} characters`);
   return { kind: spec.kind, ...(spec.duty ? { duty: spec.duty } : {}), title, text, visible: spec.visible === true };

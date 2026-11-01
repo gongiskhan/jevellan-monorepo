@@ -2,14 +2,16 @@
 // (scripts/secret-scan.mjs). It reads every tracked file (`git ls-files`) as it is on disk and fails when a line
 // holds a secret shape: provider keys, GitHub and npm tokens, cloud keys, private key blocks, JWTs. It prints the
 // file, the line and the kind of shape, never the matched text, and exits 1 when anything is found, 0 when not,
-// 2 when it cannot scan (not a git repository, unreadable values folder).
+// 2 when it cannot scan (not a git repository, an unreadable --values-from file or folder).
 //
 // Options:
 //   --untracked         also scan untracked files that are not ignored (what a commit could pick up next)
 //   --history           also scan every blob reachable from any ref (a public repository keeps its history)
-//   --values-from DIR   also fail on the exact values of the files in DIR, for example ~/.jv/secrets (M16); a value
-//                       is the whole file, each line, and the value of NAME=value lines, of at least 6 characters,
-//                       the rule of the runtime's redactor (D-014). Never read unless asked.
+//   --values-from PATH  also fail on the exact values of a file, or of the files in a folder: ~/.jv/secrets and
+//                       ~/.jv/ui-password, which lives next to the store (M16, M-044); a value is the whole file, each
+//                       line, and the value of NAME=value lines (a leading `export ` and one pair of matching quotes
+//                       stripped), of at least 6 characters, the line rule of the runtime's redactor (D-014). Never
+//                       read unless asked. The OAuth login JSON the redactor also masks is not read here.
 //
 // Brief section 1 (secrets never in logs, events, the store or command lines; tests use made-up values) and
 // section 2 (`scan:secrets`, run in phase 7 and in M16, no git hooks installed). Jevellan's pre-push mode is not
@@ -17,7 +19,7 @@
 // since jv keeps keys in files under ~/.jv/secrets, not in the environment.
 
 import { spawnSync } from 'node:child_process';
-import { lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -67,22 +69,32 @@ export function shapesIn(line) {
   return patterns.filter(({ re }) => re.test(rest)).map(({ label }) => label);
 }
 
-/** Exact values to look for, from the files of a folder (D-014's rule: whole, per line, NAME=value). */
-export function valuesFrom(dir) {
+/**
+ * Exact values to look for, from a file or from the files of a folder (D-014's line rule, as packages/core/src/redact.ts
+ * valuesOf applies it: whole, per line, and the value of NAME=value lines without `export ` and surrounding quotes).
+ */
+export function valuesFrom(path) {
   const values = new Set();
   const add = (value) => {
     const trimmed = value.trim();
     // A value of several lines (a PEM) is found through its lines, each a value of its own.
     if (trimmed.length >= MIN_VALUE_LENGTH && !trimmed.includes('\n')) values.add(trimmed);
   };
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const text = readFileSync(join(dir, entry.name), 'utf8');
+  const files = statSync(path).isFile()
+    ? [path]
+    : readdirSync(path, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => join(path, entry.name));
+  for (const file of files) {
+    const text = readFileSync(file, 'utf8');
     add(text);
-    for (const line of text.split(/\r?\n/)) {
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
       add(line);
       const eq = line.indexOf('=');
-      if (eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(line.slice(0, eq).trim())) add(line.slice(eq + 1));
+      if (eq > 0 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(line.slice(0, eq).replace(/^export\s+/, ''))) {
+        add(line.slice(eq + 1).trim().replace(/^(['"])(.*)\1$/, '$2'));
+      }
     }
   }
   return [...values];
@@ -189,11 +201,11 @@ function parseArgs(argv) {
     if (arg === '--untracked') options.untracked = true;
     else if (arg === '--history') options.history = true;
     else if (arg === '--values-from') {
-      const dir = argv[++i];
-      if (!dir) throw new Error('secret-scan: --values-from needs a folder');
-      options.valuesFrom.push(dir);
+      const path = argv[++i];
+      if (!path) throw new Error('secret-scan: --values-from needs a file or a folder');
+      options.valuesFrom.push(path);
     } else if (arg.startsWith('--values-from=')) options.valuesFrom.push(arg.slice('--values-from='.length));
-    else throw new Error(`secret-scan: unknown option ${arg}; options: --untracked, --history, --values-from DIR`);
+    else throw new Error(`secret-scan: unknown option ${arg}; options: --untracked, --history, --values-from PATH (a file or a folder)`);
   }
   return options;
 }

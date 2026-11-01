@@ -6,8 +6,8 @@
 //   {file, offset, at}. The interactive `claude --resume <native id>` appends to that same file.
 // - jv task resume first imports the entries appended since then (transcript.ts parser) as events of the attached
 //   run, every payload with source "takeover": what the owner typed as `message` events (from owner, role user),
-//   the assistant's text and thinking, and tool calls and their results (inputs and outputs trimmed to 4000
-//   characters). Then the run is marked done with a reason that counts them, and the task continues with a new turn
+//   the assistant's text and thinking, and tool calls and their results (inputs and outputs masked, then trimmed to
+//   4000 characters). Then the run is marked done with a reason that counts them, and the task continues with a new turn
 //   of the same conversation, which already holds the takeover turns.
 // - While the takeover window (jv-<R>) is still open the run stays waiting with a reason naming it, and the resume is
 //   refused (exit 4): two writers on one conversation would interleave, as jv attach refuses while a turn runs.
@@ -17,6 +17,7 @@
 
 import { conflict } from './errors.js';
 import { recordEvent } from './events.js';
+import { defaultRedactor } from './redact.js';
 import type { Store } from './store.js';
 import {
   claudeTranscriptPath,
@@ -108,7 +109,7 @@ function takeoverEvents(records: readonly NativeRecord[]): Array<{ kind: EventKi
   for (const record of records) {
     const at = typeof record.value.timestamp === 'string' && Number.isFinite(Date.parse(record.value.timestamp)) ? record.value.timestamp : undefined;
     for (const m of ownerText([record])) out.push({ kind: 'message', payload: { from: 'owner', role: 'user', text: m.text, source: TAKEOVER_SOURCE }, ...(at ? { at } : {}) });
-    for (const e of transcriptEvents(turnsFromRecords([record], 'claude'))) {
+    for (const e of transcriptEvents(turnsFromRecords([record], 'claude'), defaultRedactor())) {
       if (e.kind === 'tool-call') callNames.set(e.payload.id, e.payload.name);
       const payload: Record<string, unknown> = { ...e.payload, source: TAKEOVER_SOURCE };
       if (e.kind === 'tool-result' && callNames.has(e.payload.id)) payload.name = callNames.get(e.payload.id);

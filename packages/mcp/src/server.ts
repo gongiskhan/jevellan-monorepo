@@ -9,10 +9,11 @@
 // resources jv://status, jv://tasks/{id} and jv://sessions/{id}/report. Each tool returns the operation's text and its
 // JSON as structuredContent; a refusal is an error result with {error, exitCode}, the shape `jv ... --json` prints,
 // and a result whose jv command exits non-zero while printing its JSON (jv land refused or failed, jv doctor with a
-// FAIL) is an error result with that JSON. Arguments the tool's schema refuses are the SDK's own error result
-// (InvalidParams, before the tool runs), so they never reach the operation and are not logged. One line per tool call
-// goes to ~/.jv/logs/mcp.log: time, tool, the project and task ids, duration and exit code; never arguments, never
-// results.
+// FAIL) is an error result with that JSON. Every result and resource is masked for known secrets on the way out
+// (redactValue), the UI's second pass (D-063), on top of the masking when text is stored. Arguments the tool's schema
+// refuses are the SDK's own error result (InvalidParams, before the tool runs), so they never reach the operation and
+// are not logged. One line per tool call goes to ~/.jv/logs/mcp.log: time, tool, the project and task ids, duration
+// and exit code; never arguments, never results.
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -25,7 +26,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { JvError, refused } from 'jevellan-core/errors';
 import { paths } from 'jevellan-core/paths';
-import { redact } from 'jevellan-core/redact';
+import { redact, redactValue } from 'jevellan-core/redact';
 import { packageVersion } from 'jevellan-core/version';
 import { serverInstructions } from './instructions.js';
 import { loggedIds, type Operation, type OpContext, type ResourceDef } from './ops.js';
@@ -85,7 +86,10 @@ export function createMcpServer(options: ServerOptions = {}): McpServer {
       try {
         const r = await op.run(op.input.parse(args ?? {}), ctx);
         exitCode = r.exitCode ?? 0;
-        return { content: [{ type: 'text' as const, text: r.text }], structuredContent: r.data, ...(exitCode ? { isError: true } : {}) };
+        // Masked again on the way out, as the UI's sendJson does (D-063): a row written before its secret file
+        // existed, or before caller text was masked on the way in, still holds the value.
+        const safe = redactValue({ text: r.text, data: r.data });
+        return { content: [{ type: 'text' as const, text: safe.text }], structuredContent: safe.data, ...(exitCode ? { isError: true } : {}) };
       } catch (error) {
         exitCode = error instanceof JvError ? error.exitCode : 1;
         const message = redact(error instanceof Error ? error.message : String(error));
@@ -98,7 +102,7 @@ export function createMcpServer(options: ServerOptions = {}): McpServer {
   for (const r of options.resources ?? allResources) {
     const read = async (uri: URL, params: Record<string, string>) => {
       const data = await r.read(params);
-      return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(data, null, 2) }] };
+      return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(redactValue(data), null, 2) }] };
     };
     if (r.uri.includes('{')) {
       server.registerResource(r.name, new ResourceTemplate(r.uri, { list: undefined }), { description: r.description, mimeType: 'application/json' }, (uri, vars) =>

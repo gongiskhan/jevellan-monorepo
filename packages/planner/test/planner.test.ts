@@ -3,7 +3,7 @@
 // finishPlan's validation, skips and queued, unstarted tasks with after links.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -146,4 +146,17 @@ describe('finishPlan', () => {
     await assert.rejects(P.finishPlan(store, job(), undefined, deps), /without a report/);
     assert.equal(made.length, before);
   });
+});
+
+test('a goal masks known secrets in its title and text before it is stored', () => {
+  const secret = 'fake-goal-secret-0123456789';
+  mkdirSync(join(home, 'secrets'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, 'secrets', 'goal.key'), `${secret}\n`, { mode: 0o600 });
+  const g = P.addGoal(store, { project: 'sandbox', title: `Rotate ${secret}`, text: `The old key ${secret} leaked.` });
+  assert.equal(g.title, 'Rotate [redacted]');
+  assert.equal(g.text, 'The old key [redacted] leaked.');
+  const row = store.db.prepare('SELECT title, text FROM goals WHERE id = ?').get(g.id) as { title: string; text: string };
+  assert.ok(!row.title.includes(secret) && !row.text.includes(secret));
+  const plain = P.addGoal(store, { project: 'sandbox', title: 'Plain goal', text: 'Nothing  secret,\n  kept as written.' });
+  assert.equal(plain.text, 'Nothing  secret,\n  kept as written.');
 });

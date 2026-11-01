@@ -1,6 +1,7 @@
 // jv memory add|search|list|archive|export (brief section 6): what the agents of the system remember, through
 // jevellan-memory on the store's own connection. A write to a project's scope regenerates
-// ~/.jv/projects/<name>/memory.md. Nothing deletes a memory: archive is the only removal.
+// ~/.jv/projects/<name>/memory.md. Nothing deletes a memory: archive is the only removal. The text of add is masked for
+// known secrets before it is stored (redact.ts), as the worker tool jv_remember does.
 //
 //   jv memory add --scope global|project [--project N] --kind K [--tag t]... "text"
 //   jv memory search [--project N] "query"
@@ -13,6 +14,7 @@ import { flagInt, flagString, flagStrings, requireFlag } from '../command.js';
 import { JvError, notFound, refused } from 'jevellan-core/errors';
 import { normalizeId } from 'jevellan-core/ids';
 import { paths } from 'jevellan-core/paths';
+import { redact } from 'jevellan-core/redact';
 import { openStore, type Store } from 'jevellan-core/store';
 import { memory } from '../setup.js';
 
@@ -64,7 +66,8 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
         let project: string | undefined;
         if (scopeFlag === 'project') project = requireProject(store, requireFlag(args, 'project'));
         const scope = project ? memory.projectScope(project) : memory.GLOBAL_SCOPE;
-        const r = asJv(() => memory.remember(store.db, { scope, kind: kind as memory.MemoryKind, text, tags: flagStrings(args, 'tag'), source: source(store) }));
+        // Masked for known secrets before it is stored, as jv_remember does (jevellan-memory cannot import the redactor).
+        const r = asJv(() => memory.remember(store.db, { scope, kind: kind as memory.MemoryKind, text: redact(text), tags: flagStrings(args, 'tag'), source: source(store) }));
         if (project) memory.writeProjectMemoryFile(store.db, project, `${paths.projectDir(project)}/memory.md`);
         const m = memory.get(store.db, r.id)!;
         io.result({ ...r, memory: m }, `${r.created ? 'Remembered' : 'Already known'} (${r.id}): ${line(m)}`);

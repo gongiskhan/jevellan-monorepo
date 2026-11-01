@@ -7,11 +7,17 @@
 // - query() options are exactly section 6.1's: cwd, env, model, effort, the claude_code preset with the append,
 //   bypassPermissions for write duties and dontAsk with the read-only tool list for read-only duties, the in-process
 //   report server plus project.json's servers, settingSources ['user'], includePartialMessages, resume, no maxTurns,
-//   no hooks. In dontAsk mode a tool runs only when allowedTools pre-approves it, so allowedTools names the report tool
-//   (mcp__jv__jv_report), the two web tools of the read-only list, Write for plan, and each project MCP server.
+//   no hooks. project.json's servers go in a mode 600 file (<task dir>/<R>.mcp.json, as claude-tmux writes it) passed
+//   as --mcp-config through extraArgs, not in Options.mcpServers: the SDK puts those on the command line as inline
+//   JSON, and their env and header values can be secrets (run.ts projectMcpServers). Only the in-process report
+//   server, which holds no value, stays in Options.mcpServers. In dontAsk mode a tool runs only when allowedTools
+//   pre-approves it, so allowedTools names the report tool (mcp__jv__jv_report), the two web tools of the read-only
+//   list, Write for plan, and each project MCP server.
 // - Events: text and thinking are recorded per complete assistant block (the thinking blocks are the summaries the
 //   model returns), not per stream delta, so a turn is a few dozen rows, not thousands; tool calls and results are
-//   recorded once per tool id with input and output trimmed to 4000 characters.
+//   recorded once per tool id with input and output trimmed to 4000 characters. Every text is masked before it is cut
+//   (tool texts, the 300-character error messages) and stderr goes through redact.redactingWriter, so a secret that
+//   crosses a cut or a chunk boundary is masked whole.
 // - Usage: modelUsage and total_cost_usd are cumulative across the turns of a resumed conversation ("a resumed session
 //   continues from the totals its transcript saved"). Every turn is its own row and process (D-006), so the totals
 //   already counted come from the store (the rows before this one with the same native_session_id), and each usage
@@ -19,11 +25,14 @@
 // - No report on result: the turn is resumed once, in this same process and row, with NO_REPORT_PROMPT; still none:
 //   a `blocked` report is synthesized with "no report" (section 5).
 
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createSdkMcpServer, query, tool, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { recordEvent, tailEvents } from '../events.js';
+import { recordEvent, redactedTrim, tailEvents, TOOL_TEXT_MAX } from '../events.js';
 import { processGroup, stopRun } from '../launcher.js';
+import { paths } from '../paths.js';
 import { NO_REPORT_PROMPT } from '../prompt.js';
-import { defaultRedactor, type Redactor } from '../redact.js';
+import { defaultRedactor, redactingWriter, type Redactor } from '../redact.js';
 import {
   REPORT_SERVER_NAME,
   REPORT_TOOL_DESCRIPTION,
@@ -49,7 +58,7 @@ import { RunFailure, RunStopped, type McpServerSpec, type RuntimeModule, type St
 
 export const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch'] as const;
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export const TOOL_TEXT_MAX = 4000;
+export { TOOL_TEXT_MAX };
 /** Cost amounts closer than this are the same amount (rows store costs rounded to 1e-6). */
 export const COST_EPSILON = 1e-5;
 export const NO_REPORT_SUMMARY = 'The session ended its turn without jv_report, also after being asked once more (no report).';
@@ -186,17 +195,44 @@ export function reportServer(store: Store, sessionId: string, deps: ClaudeSdkDep
   return makeServer({ name: REPORT_SERVER_NAME, version: '0.1.0', tools: [jvReport, jvRemember, jvRecall], alwaysLoad: true });
 }
 
-/** The query() options of section 6.1 for one turn. */
+/** project.json's servers of a turn (never the report server's name). */
+function projectServersOf(input: Pick<TurnInput, 'mcp'>): Record<string, McpServerSpec> {
+  return Object.fromEntries(Object.entries(input.mcp.servers).filter(([name]) => name !== REPORT_SERVER_NAME));
+}
+
+/**
+ * Writes project.json's servers of a turn to <task dir>/<R>.mcp.json, mode 600, and returns the file; undefined when
+ * the project has none. Their env and header values can be secrets, so they reach Claude Code in this file, never on
+ * its command line (see the header).
+ */
+export function writeProjectMcpFile(store: Store, session: SessionRow, input: Pick<TurnInput, 'mcp'>): string | undefined {
+  const servers = projectServersOf(input);
+  if (Object.keys(servers).length === 0) return undefined;
+  const project = store.getProject(session.project_id);
+  if (!project || !session.task_id) throw new RunFailure(`session ${session.id} has no project and task to keep its MCP config under`);
+  const dir = paths.taskDir(project.name, session.task_id);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${session.id}.mcp.json`);
+  writeFileSync(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return file;
+}
+
+/**
+ * The query() options of section 6.1 for one turn. `mcpFile` is the file writeProjectMcpFile wrote for the project's
+ * servers (required when there are any): it goes to Claude Code as --mcp-config.
+ */
 export function queryOptions(
   session: SessionRow,
   input: TurnInput,
   jv: NonNullable<Options['mcpServers']>[string],
   resume: string | undefined,
   stderr: (text: string) => void,
+  mcpFile?: string,
 ): Options {
-  const projectServers = Object.fromEntries(
-    Object.entries(input.mcp.servers).filter(([name]) => name !== REPORT_SERVER_NAME),
-  ) as Record<string, McpServerSpec>;
+  const projectServers = projectServersOf(input);
+  const hasProjectServers = Object.keys(projectServers).length > 0;
+  if (hasProjectServers && !mcpFile) throw new RunFailure(`session ${session.id}: the project's MCP servers need their config file`);
   const effort = (EFFORT_LEVELS as readonly string[]).includes(session.effort)
     ? (session.effort as (typeof EFFORT_LEVELS)[number])
     : undefined;
@@ -222,7 +258,8 @@ export function queryOptions(
     ...(effort ? { effort } : {}),
     systemPrompt: { type: 'preset', preset: 'claude_code', append: input.systemAppend },
     ...permissions,
-    mcpServers: { ...(projectServers as NonNullable<Options['mcpServers']>), [REPORT_SERVER_NAME]: jv },
+    mcpServers: { [REPORT_SERVER_NAME]: jv },
+    ...(hasProjectServers ? { extraArgs: { 'mcp-config': mcpFile! } } : {}),
     settingSources: ['user'],
     includePartialMessages: true,
     ...(resume ? { resume } : {}),
@@ -259,11 +296,6 @@ function asText(value: unknown): string {
   }
 }
 
-function trimmed(text: string, max = TOOL_TEXT_MAX): { text: string; truncated?: true } {
-  const chars = [...text];
-  return chars.length <= max ? { text } : { text: chars.slice(0, max).join(''), truncated: true };
-}
-
 /** Runs one query() to its end, recording events. Rejects with RunStopped or RunFailure. */
 async function runQuery(
   store: Store,
@@ -277,7 +309,10 @@ async function runQuery(
   const redactor = deps.redactor ?? defaultRedactor();
   const emit = (kind: EventKind, payload: unknown) => recordEvent(store, session.id, kind, payload, { redactor });
   const stderr = deps.stderr ?? ((text: string) => process.stderr.write(text));
-  const options = queryOptions(session, input, reportServer(store, session.id, deps), resume, (data) => stderr(redactor.redact(data)));
+  // stderr arrives in chunks: masked as one stream, so a value split between two chunks is still masked whole.
+  const stderrLog = redactingWriter(stderr, redactor);
+  const mcpFile = writeProjectMcpFile(store, session, input);
+  const options = queryOptions(session, input, reportServer(store, session.id, deps), resume, (data) => stderrLog.write(data), mcpFile);
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (input.signal?.aborted) throw new RunStopped();
@@ -312,7 +347,7 @@ async function runQuery(
           else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim() !== '') emit('thinking', { text: b.thinking });
           else if (b.type === 'tool_use' && typeof b.id === 'string' && !started.has(b.id)) {
             started.add(b.id);
-            const t = trimmed(asText(b.input ?? {}));
+            const t = redactedTrim(redactor, asText(b.input ?? {}), TOOL_TEXT_MAX);
             emit('tool-call', { id: b.id, name: typeof b.name === 'string' ? b.name : 'unknown', input: t.text, ...(t.truncated ? { inputTruncated: true } : {}) });
           }
         }
@@ -327,7 +362,7 @@ async function runQuery(
           const b = block as Record<string, unknown>;
           if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && !ended.has(b.tool_use_id)) {
             ended.add(b.tool_use_id);
-            const t = trimmed(asText(b.content ?? ''));
+            const t = redactedTrim(redactor, asText(b.content ?? ''), TOOL_TEXT_MAX);
             emit('tool-result', { id: b.tool_use_id, ok: b.is_error !== true, output: t.text, ...(t.truncated ? { outputTruncated: true } : {}) });
           }
         }
@@ -353,14 +388,14 @@ async function runQuery(
         if (!succeeded) {
           const errors = Array.isArray(event.errors) ? event.errors.filter((e): e is string => typeof e === 'string') : [];
           failure = errors.join('; ') || (typeof event.result === 'string' ? event.result : '') || failure || 'Claude returned an unsuccessful result.';
-          emit('error', { message: short(failure), subtype: typeof event.subtype === 'string' ? event.subtype : null });
+          emit('error', { message: short(redactor.redact(failure)), subtype: typeof event.subtype === 'string' ? event.subtype : null });
         }
       }
     }
   } catch (error) {
     if (controller.signal.aborted) throw new RunStopped();
     const message = error instanceof Error ? error.message : String(error);
-    emit('error', { message: short(message) });
+    emit('error', { message: short(redactor.redact(message)) });
     throw new RunFailure(short(redactor.redact(message)));
   } finally {
     input.signal?.removeEventListener('abort', onAbort);
@@ -369,6 +404,7 @@ async function runQuery(
     } catch {
       // already closed
     }
+    stderrLog.end();
   }
   if (controller.signal.aborted) throw new RunStopped();
   if (!sawResult) throw new RunFailure(short(redactor.redact(failure ?? 'Claude ended without a result.')));

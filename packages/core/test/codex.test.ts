@@ -266,3 +266,86 @@ test('the Codex binary is the SDK\'s own', () => {
   const exe = codex.codexExecutable();
   assert.ok(exe === 'codex' || /node_modules\/@openai\/codex-[a-z0-9-]+\/vendor\//.test(exe), exe);
 });
+
+test('a secret across the 4000-character cut of a command or its output, or the 300-character cut of an item error, is masked whole', async () => {
+  const { Redactor } = await import('../src/redact.js');
+  const secret = `fake-long-secret-${'M5n6B7v8'.repeat(10)}`;
+  const near = (n: number) => `${'z'.repeat(n)}${secret} and after ${'w'.repeat(300)}`;
+  const s = newRun();
+  const { createCodex } = fakeCodex([
+    async function* () {
+      yield { type: 'thread.started', thread_id: 't-secret' };
+      yield { type: 'item.started', item: { id: 'c9', type: 'command_execution', command: near(codex.TOOL_TEXT_MAX - 50), aggregated_output: '', status: 'in_progress' } };
+      yield { type: 'item.completed', item: { id: 'c9', type: 'command_execution', command: 'x', aggregated_output: near(codex.TOOL_TEXT_MAX - 40), exit_code: 0, status: 'completed' } };
+      yield { type: 'item.completed', item: { id: 'e9', type: 'error', message: near(280) } };
+      writeReport(store, s.id, { status: 'done', summary: 'Done.' });
+      yield usage(10, 0, 1);
+    },
+  ]);
+  const rt = codex.createCodexRuntime({ openStore: () => store, createCodex, executable: 'codex', redactor: new Redactor([secret]) });
+  await rt.start(s, { prompt: 'Start.', ...turn('write') });
+  const events = store.listEvents(s.id);
+  assert.deepEqual(events.map((e) => e.kind), ['tool-call', 'tool-result', 'error', 'report', 'usage']);
+  for (const e of events) assert.ok(!e.payload.includes(secret.slice(0, 20)), `${e.kind} keeps part of the secret`);
+  assert.equal(events.filter((e) => e.payload.includes('[redacted]')).length, 3);
+});
+
+test('project MCP server env and header values reach Codex through its environment, never its command line', async () => {
+  const { chmodSync, readFileSync, writeFileSync, existsSync } = await import('node:fs');
+  // A fake Codex binary (no model is reached): it writes its arguments and environment to a file and exits.
+  const out = join(home, 'codex-argv.json');
+  const fake = join(home, 'fake-codex');
+  writeFileSync(fake, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.exit(3);\n`);
+  chmodSync(fake, 0o755);
+  const region = 'fake-region-value-31415';
+  const header = 'fake-project-header-2718';
+  const base = turn('write');
+  const input = {
+    ...base,
+    mcp: {
+      ...base.mcp,
+      servers: {
+        tracker: { type: 'stdio' as const, command: 'tracker-mcp', args: ['--stdio'], env: { TRACKER_REGION: region } },
+        docs: { type: 'http' as const, url: 'http://127.0.0.1:9/mcp', headers: { 'X-Project': header } },
+      },
+    },
+  };
+  const s = newRun();
+  const rt = codex.createCodexRuntime({ openStore: () => store, executable: fake });
+  await assert.rejects(rt.start(s, { prompt: 'Start.', ...input }), (e: unknown) => e instanceof RunFailure);
+  assert.ok(existsSync(out), 'the fake Codex ran');
+  const seen = JSON.parse(readFileSync(out, 'utf8')) as { argv: string[]; env: Record<string, string> };
+  const argv = seen.argv.join(' ');
+  assert.ok(argv.includes('mcp_servers.tracker'), argv);
+  assert.ok(!argv.includes(region) && !argv.includes(header), `a value is on the command line: ${argv}`);
+  assert.equal(seen.env.TRACKER_REGION, region);
+  assert.equal(seen.env[codex.mcpHeaderVariable('docs', 'X-Project')], header);
+  assert.equal(seen.env.JV_SESSION, 'x', 'the worker environment is kept');
+});
+
+test('codexMcpServers names the variables only, and refuses a name two servers or the worker set to different values', () => {
+  const env = { HOME: '/h', CODEX_HOME: '/h/.codex' };
+  const report = { type: 'stdio' as const, command: '/node', args: ['r.js'], env: { JV_HOME: '/jv' } };
+  const r = codex.codexMcpServers({
+    env,
+    mcp: {
+      servers: {
+        a: { type: 'stdio', command: 'a', env: { SHARED: 'one', A_ONLY: 'x' } },
+        b: { type: 'stdio', command: 'b', env: { SHARED: 'one' } },
+        web: { type: 'http', url: 'http://127.0.0.1:9/mcp', headers: { Authorization: 'Bearer fake-web-token-1234' } },
+        old: { type: 'sse', url: 'http://127.0.0.1:9/sse' },
+      },
+      report,
+    },
+  });
+  assert.deepEqual(r.servers.a, { command: 'a', args: [], env_vars: ['SHARED', 'A_ONLY'], default_tools_approval_mode: 'approve' });
+  assert.deepEqual(r.servers.web, { url: 'http://127.0.0.1:9/mcp', env_http_headers: { Authorization: 'JV_MCP_WEB_AUTHORIZATION' }, default_tools_approval_mode: 'approve' });
+  assert.equal(r.servers.old, undefined, 'Codex has no SSE transport');
+  assert.deepEqual(r.servers.jv, { command: '/node', args: ['r.js'], env: { JV_HOME: '/jv' }, default_tools_approval_mode: 'approve' });
+  assert.deepEqual(r.env, { SHARED: 'one', A_ONLY: 'x', JV_MCP_WEB_AUTHORIZATION: 'Bearer fake-web-token-1234' });
+  assert.ok(!JSON.stringify(r.servers).includes('fake-web-token'));
+  const clash = (servers: Record<string, import('../src/runtimes/types.js').McpServerSpec>) => () => codex.codexMcpServers({ env, mcp: { servers, report } });
+  assert.throws(clash({ a: { command: 'a', env: { SHARED: 'one' } }, b: { command: 'b', env: { SHARED: 'two' } } }), (e: unknown) => (e as { exitCode?: number }).exitCode === 2 && /SHARED/.test((e as Error).message));
+  assert.throws(clash({ a: { command: 'a', env: { HOME: '/elsewhere' } } }), /HOME/);
+  assert.doesNotThrow(clash({ a: { command: 'a', env: { HOME: '/h' } } }));
+});

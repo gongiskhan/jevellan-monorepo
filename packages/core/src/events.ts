@@ -3,7 +3,9 @@
 // - seq comes from store.appendEvent, which also sets the session's last_event_at, in one transaction.
 // - Every string of the payload (and every key) is redacted first, then each string longer than 20000 characters is
 //   cut and the payload gets `truncated: true`. Redacting before cutting means a secret is never split across the cut
-//   (a split half would no longer match the redactor).
+//   (a split half would no longer match the redactor). The same rule holds for every cut before recordEvent: tool
+//   inputs and outputs are cut to TOOL_TEXT_MAX by the runtimes and the transcript reader through redactedTrim, which
+//   masks first.
 // - `usage` events add their tokens and cost to the session's counters; `rate-limit` events are also written to
 //   provider_usage with source `stream`, under the session's provider. Both in the event's transaction.
 // - tailEvents reads a session's events from the store (the tail() of every runtime module).
@@ -17,6 +19,8 @@ import type { Store, UsageDelta } from './store.js';
 import type { EventKind, EventRow } from './types.js';
 
 export const EVENT_TEXT_MAX = 20000;
+/** Tool inputs and outputs are cut to this many characters in tool-call and tool-result events. */
+export const TOOL_TEXT_MAX = 4000;
 
 export interface RecordEventOptions {
   redactor?: Redactor;
@@ -48,6 +52,14 @@ export function trimText(text: string, max: number): { text: string; truncated: 
   const chars = [...text];
   if (chars.length <= max) return { text, truncated: false };
   return { text: chars.slice(0, max).join(''), truncated: true };
+}
+
+/**
+ * The text with every known secret masked, then cut to at most `max` characters. Masking first means the cut never
+ * leaves part of a secret behind (a cut half would no longer match the redactor); `truncated` is about the masked text.
+ */
+export function redactedTrim(redactor: Pick<Redactor, 'redact'>, text: string, max: number): { text: string; truncated: boolean } {
+  return trimText(redactor.redact(text), max);
 }
 
 /** A copy of a JSON-like value with every string cut to `max`; reports whether anything was cut. */

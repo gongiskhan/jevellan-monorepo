@@ -18,11 +18,14 @@ import {
   transcriptEvents,
   TurnTracker,
 } from '../src/transcript.js';
+import { Redactor } from '../src/redact.js';
 
 const dir = mkdtempSync(join(realpathSync(tmpdir()), 'jv-transcript-test-'));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const line = (v: unknown) => `${JSON.stringify(v)}\n`;
+// No secret is known in these transcripts: nothing is masked.
+const none = new Redactor();
 
 const claudeLines = [
   line({ type: 'user', message: { role: 'user', content: 'Start the step now. <system-reminder>hidden</system-reminder>' }, timestamp: '2026-11-01T10:00:00.000Z' }),
@@ -58,17 +61,18 @@ test('the Claude branch projects text, thinking and tools; skips sidechains; cle
 });
 
 test('jv events: assistant text and thinking, tool call and result; a result in a later chunk stands alone', () => {
-  const all = transcriptEvents(parseNativeTranscript(claudeLines.join(''), 'claude'));
+  const all = transcriptEvents(parseNativeTranscript(claudeLines.join(''), 'claude'), none);
   assert.deepEqual(
     all.map((e) => e.kind),
     ['thinking', 'tool-call', 'tool-result', 'text'],
   );
-  const first = transcriptEvents(parseNativeTranscript(claudeLines.slice(0, 3).join(''), 'claude'));
+  const first = transcriptEvents(parseNativeTranscript(claudeLines.slice(0, 3).join(''), 'claude'), none);
   assert.deepEqual(first.map((e) => e.kind), ['thinking', 'tool-call']);
-  const later = transcriptEvents(parseNativeTranscript(claudeLines[3]!, 'claude', 999));
+  const later = transcriptEvents(parseNativeTranscript(claudeLines[3]!, 'claude', 999), none);
   assert.deepEqual(later, [{ kind: 'tool-result', payload: { id: 'tu_1', ok: true, output: 'export {}' } }]);
   const long = transcriptEvents(
     parseNativeTranscript(line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't', name: 'Bash', input: 'x'.repeat(5000) }] } }), 'claude'),
+    none,
   );
   assert.equal(long[0]!.kind, 'tool-call');
   assert.equal((long[0]!.payload as { input: string }).input.length, 4000);
