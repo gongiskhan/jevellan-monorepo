@@ -93,7 +93,7 @@ Checked with `sw_vers`, `uname -m`, `df -h /`, `--version` of each tool, `lsof -
   (`tsc -p` with a config that sets both, no TS2742 errors), with `target` ES2022 and `lib` ES2023 (M-010).
 - After the split and the fixes: core 298, cli 84, ui 16 tests pass (`npm test` in each package).
 - A store created by the skills runtime's `openStore()` dumps 28 `sqlite_master` rows; the fixture
-  `packages/core/test/fixtures/schema-v1.sqlite-master.json` holds them and `store-v2.test.ts` compares a schema 1
+  `packages/core/test/fixtures/schema-v1-master.json` holds them and `store-v2.test.ts` compares a schema 1
   store of this jv with it.
 
 ## 2026-11-01 Phase 1: the real ~/.jv

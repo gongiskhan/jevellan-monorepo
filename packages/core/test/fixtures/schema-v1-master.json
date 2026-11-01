@@ -1,0 +1,170 @@
+[
+  {
+    "type": "table",
+    "name": "projects",
+    "tbl_name": "projects",
+    "sql": "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, path TEXT NOT NULL, default_branch TEXT NOT NULL, created_at TEXT NOT NULL)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_projects_1",
+    "tbl_name": "projects",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_projects_2",
+    "tbl_name": "projects",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "tasks",
+    "tbl_name": "tasks",
+    "sql": "CREATE TABLE tasks (\n  id TEXT PRIMARY KEY,                 -- 'T' + 6 chars base32, unique\n  project_id TEXT NOT NULL REFERENCES projects(id),\n  parent_task_id TEXT REFERENCES tasks(id),\n  after_task_id TEXT REFERENCES tasks(id),\n  request_id TEXT UNIQUE NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('feature','bug','automation','single')),\n  title TEXT NOT NULL CHECK (length(title) <= 120),\n  task_text TEXT NOT NULL CHECK (length(task_text) <= 32768),\n  workflow_json TEXT NOT NULL,          -- the resolved workflow (steps) at creation\n  state TEXT NOT NULL CHECK (state IN ('queued','running','waiting-owner','landing','done','failed','stopped')),\n  state_reason TEXT NOT NULL DEFAULT '',\n  current_step INTEGER NOT NULL DEFAULT 0,\n  branch TEXT, worktree_path TEXT, base_commit TEXT, landed_commit TEXT,\n  visible INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_tasks_1",
+    "tbl_name": "tasks",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_tasks_2",
+    "tbl_name": "tasks",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "steps",
+    "tbl_name": "steps",
+    "sql": "CREATE TABLE steps (\n  id TEXT PRIMARY KEY,                 -- 'S' + 6 chars\n  task_id TEXT NOT NULL REFERENCES tasks(id),\n  ordinal INTEGER NOT NULL,\n  duty TEXT NOT NULL,\n  instructions TEXT NOT NULL DEFAULT '',\n  when_rule TEXT NOT NULL DEFAULT 'always',   -- 'always' | 'jev:<question_id>'\n  on_fail_json TEXT,                           -- {\"goto\": \"<duty>\", \"maxLoops\": 2}\n  state TEXT NOT NULL CHECK (state IN ('pending','running','retrying','done','failed','skipped')),\n  state_reason TEXT NOT NULL DEFAULT '',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  started_at TEXT, ended_at TEXT,\n  UNIQUE (task_id, ordinal)\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_steps_1",
+    "tbl_name": "steps",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_steps_2",
+    "tbl_name": "steps",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "sessions",
+    "tbl_name": "sessions",
+    "sql": "CREATE TABLE sessions (\n  id TEXT PRIMARY KEY,                 -- 'R' + 6 chars (a run)\n  project_id TEXT NOT NULL REFERENCES projects(id),\n  task_id TEXT REFERENCES tasks(id),\n  step_id TEXT REFERENCES steps(id),\n  request_id TEXT UNIQUE NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('step','coordinator','probe')),\n  runtime TEXT NOT NULL CHECK (runtime IN ('claude-sdk','claude-tmux','codex','llm')),\n  provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,\n  cwd TEXT NOT NULL,\n  native_session_id TEXT,              -- Claude session uuid, Codex thread id, or NULL for llm\n  pid INTEGER, pgid INTEGER, tmux_target TEXT,\n  state TEXT NOT NULL CHECK (state IN ('queued','starting','running','waiting','done','failed','lost','stopped')),\n  state_reason TEXT NOT NULL DEFAULT '',\n  started_at TEXT, ended_at TEXT, last_event_at TEXT,\n  input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,\n  cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,\n  cost_usd REAL\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_sessions_1",
+    "tbl_name": "sessions",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_sessions_2",
+    "tbl_name": "sessions",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "events",
+    "tbl_name": "events",
+    "sql": "CREATE TABLE events (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  session_id TEXT NOT NULL REFERENCES sessions(id),\n  seq INTEGER NOT NULL,\n  at TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('start','text','thinking','tool-call','tool-result','report','error','message','usage','rate-limit','end')),\n  payload TEXT NOT NULL,               -- JSON; text payloads trimmed to 20000 chars with a 'truncated' flag\n  UNIQUE (session_id, seq)\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_events_1",
+    "tbl_name": "events",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "sqlite_sequence",
+    "tbl_name": "sqlite_sequence",
+    "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+  },
+  {
+    "type": "table",
+    "name": "reports",
+    "tbl_name": "reports",
+    "sql": "CREATE TABLE reports (\n  id TEXT PRIMARY KEY,\n  session_id TEXT UNIQUE NOT NULL REFERENCES sessions(id),\n  step_id TEXT REFERENCES steps(id), task_id TEXT REFERENCES tasks(id),\n  status TEXT NOT NULL CHECK (status IN ('progress','done','blocked','needs-decision')),\n  summary TEXT NOT NULL CHECK (length(summary) <= 4000),\n  question TEXT, options_json TEXT, tests_json TEXT, changed_files_json TEXT NOT NULL DEFAULT '[]',\n  screenshots_json TEXT NOT NULL DEFAULT '[]', limitations TEXT, owner_commands_json TEXT,\n  created_at TEXT NOT NULL\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_reports_1",
+    "tbl_name": "reports",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_reports_2",
+    "tbl_name": "reports",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "decisions",
+    "tbl_name": "decisions",
+    "sql": "CREATE TABLE decisions (\n  id TEXT PRIMARY KEY,\n  kind TEXT NOT NULL CHECK (kind IN ('placement','landing','workflow')),\n  project_id TEXT NOT NULL, task_id TEXT, step_id TEXT, session_id TEXT,\n  skill_name TEXT NOT NULL, skill_hash TEXT NOT NULL,     -- sha256 of the SKILL.md body used\n  jev_model TEXT NOT NULL,\n  state_json TEXT NOT NULL, questions_json TEXT NOT NULL,\n  answers_json TEXT NOT NULL, chosen_json TEXT NOT NULL,  -- what the script resolved from the answers\n  override_json TEXT, override_mode TEXT CHECK (override_mode IN ('undo','keep')),\n  outcome_json TEXT,                                      -- filled when the placed step ends: {status, attempts, durationMs, costUsd}\n  latency_ms INTEGER NOT NULL, usage_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_decisions_1",
+    "tbl_name": "decisions",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "landings",
+    "tbl_name": "landings",
+    "sql": "CREATE TABLE landings (\n  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), decision_id TEXT REFERENCES decisions(id),\n  route TEXT NOT NULL CHECK (route IN ('land','verify-then-land','ask-owner')),\n  state TEXT NOT NULL CHECK (state IN ('pending','checking','landing','landed','asked','failed')),\n  checks_json TEXT NOT NULL DEFAULT '[]', commit_sha TEXT, reason TEXT NOT NULL DEFAULT '',\n  created_at TEXT NOT NULL, ended_at TEXT\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_landings_1",
+    "tbl_name": "landings",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "messages",
+    "tbl_name": "messages",
+    "sql": "CREATE TABLE messages (\n  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), session_id TEXT,\n  direction TEXT NOT NULL CHECK (direction IN ('owner','coordinator','answer')),\n  text TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_messages_1",
+    "tbl_name": "messages",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "provider_usage",
+    "tbl_name": "provider_usage",
+    "sql": "CREATE TABLE provider_usage (\n  provider TEXT NOT NULL, observed_at TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('probe','stream','local')),\n  five_hour_pct REAL, weekly_pct REAL, five_hour_resets_at TEXT, weekly_resets_at TEXT,\n  local_week TEXT, local_input_tokens INTEGER, local_output_tokens INTEGER, local_cost_usd REAL,\n  PRIMARY KEY (provider, observed_at)\n)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_provider_usage_1",
+    "tbl_name": "provider_usage",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "meta",
+    "tbl_name": "meta",
+    "sql": "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_meta_1",
+    "tbl_name": "meta",
+    "sql": null
+  }
+]

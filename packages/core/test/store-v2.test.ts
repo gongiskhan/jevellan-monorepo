@@ -36,7 +36,7 @@ function v1Store(f: string) {
 
 describe('schema 1', () => {
   test('a schema 1 store has the same sqlite_master SQL as one the skills repository\'s jv created', () => {
-    const expected = JSON.parse(readFileSync(join(RUNTIME_ROOT, 'test', 'fixtures', 'schema-v1.sqlite-master.json'), 'utf8')) as object[];
+    const expected = JSON.parse(readFileSync(join(RUNTIME_ROOT, 'test', 'fixtures', 'schema-v1-master.json'), 'utf8')) as object[];
     const f = file('v1');
     Store.open({ file: f, schemaVersion: '1' }).close();
     const db = new DatabaseSync(f, { readOnly: true });
