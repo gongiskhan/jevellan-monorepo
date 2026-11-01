@@ -760,3 +760,11 @@ give such a message to the newest report of the task that names its surfaceId an
 surface shows dimmed and inert with "Sent to the step at HH:MM" at the message's time, with the sent values written
 back into its data model. The sent state so survives a reload and shows on every device while the server keeps no UI
 state (M-066). A surface on a done or stopped task is inert with "Task <state>: the surface takes no input.".
+
+## M-082 The nested zod 3 stays (owner's decision)
+
+The owner decided on the npm audit item of M-070: `@a2ui/react` and `@a2ui/web_core` stay at 0.14.0 with zod 3.25.76
+nested under them and in `packages/ui`. The zod advisory (GHSA-mrhx-c7xc-m3w5, memory exhaustion on oversized
+constrained collections) does not apply here: zod 3 runs only in the browser on A2UI messages, which `jv_report` caps
+at 65536 characters (brief section 3) and which come from jv's own workers. The dompurify override of M-070 stays.
+`npm audit` will keep listing the zod 3 copies; that is known and accepted.
