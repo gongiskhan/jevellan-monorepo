@@ -109,3 +109,241 @@ The brief's base config says ES2022. The lifted code uses `Array.prototype.findL
 has, so `tsconfig.base.json` sets `target` ES2022 and `lib` ES2023, with `strict`, `noUncheckedIndexedAccess`,
 `noImplicitOverride`, NodeNext, `declaration` and `composite` (project references, `tsc -b`). The lifted sources
 compiled with TypeScript 5.9.3 under these settings without a change (M-002 verified).
+
+## M-011 Store schema 2 and schema extensions
+
+`SCHEMA_SQL` stays the skills repository's schema 1 byte for byte (a test compares `sqlite_master` with a store
+that runtime created, `test/fixtures/schema-v1-master.json`). Schema 2 is `SCHEMA_V2_SQL`, the brief's section 3
+statements without the version update. A version 1 store is copied once to `store.sqlite.v1.bak` with `VACUUM INTO`
+(a consistent copy that includes the WAL; mode 600) and migrated in one `BEGIN IMMEDIATE` transaction that rechecks
+the version inside. A store newer than this jv is refused with exit 2 "store schema <n> is newer than this jv (2);
+update jv". jevellan-core depends on nothing in the repository, so the memory tables are a schema extension
+(`registerSchemaExtension({name, present, ensure})`) that the jv CLI registers at process start (M-015): applied
+inside the migration, on a new store, and on any open where `present` reads false. An up-to-date store is opened
+without a write lock, as before.
+
+## M-012 The coordinator conversation task is one per project, keyed by request id
+
+The brief puts owner messages to the coordinator on "the sentinel task T000000 that migrate() creates once per
+project", but `tasks.id` is the primary key, so one id cannot serve two projects. Each project gets its own task
+(kind single, no steps, state done, origin coordinator, title "Coordinator conversation") with request id
+`coordinator-conversation:<project id>` and a normal random id; the migration creates one per existing project,
+`createProject` one per new project, and `store.coordinatorTask(projectId)` finds or creates it. `listTasks` leaves
+these tasks out unless asked (`include_coordinator_tasks`), and the viewer's project query does too, so they never
+show as work, never land, and are never counted.
+
+## M-013 What holds a slot
+
+`limits.ts` reads `limits` of bot.json leniently (defaults perProject 2, total 4; the bot validates the file). A task
+holds a slot while it is in state running (a step runs, or its next step is being placed between two runs) or while
+one of its step sessions is queued, starting or running (a verify-then-land run of a landing task). Counting the
+running state closes the window between a step's end and the next step's run, in which the bot could admit one task
+too many. A task waiting on the owner, queued, or landing without a run holds none.
+
+## M-014 jevellan-memory keeps a log of archives and supersedes
+
+`archive(db, id, reason, by)` takes a reason, but the memories row of section 6 has no column for it. A
+`memory_log` table (memory id, time, action archive, supersede, reword or expire, reason, by) is created by
+`ensureSchema` next to `memories` and `memories_fts`, so every removal says why and who. `memories_fts` is an
+external-content FTS5 table over `memories`; its `tags` column is fed by the triggers from `tags_json` joined by
+spaces (`json_each`), so the index is never read back as a column and never rebuilt.
+
+## M-015 The memory port and the worker MCP server
+
+jevellan-core declares a `MemoryApi` (remember, recall, buildBrief, writeProjectMemoryFile, the scopes) and
+`registerMemory(api)`. `packages/cli/src/setup.ts`, imported by the CLI before any command, registers
+jevellan-memory there and as the store's schema extension, so every jv process has it: `jv run`, the bot, the UI and
+MCP servers. The stdio worker server is started as `<node> <jv entry> worker-mcp --session R` (an internal command)
+instead of `node <runtime>/dist/report-mcp.js`, so the memory tools work in claude-tmux and Codex sessions too; the
+package's `jv-worker-mcp` and `jv-report-mcp` bins run the same server directly, where memory answers that it is not
+available. Read-only duties pre-approve `mcp__jv__jv_report`, `jv_remember` and `jv_recall` (D-026). The worker
+prompt carries the block "What this project remembers:" after the project instructions and before the task block,
+recomputed every turn (so `uses` counts the turns a memory was shown in); the run's `start` event records the block
+and the memory ids. The coordinator prompt gets the same block at start and restart.
+
+## M-016 Cron and daylight saving time
+
+nextRun follows Vixie cron: a local time that the clock jumps over fires once at the first instant after the jump
+when the hour field is fixed, and does not exist for a wildcard hour; a local time that happens twice fires once (the
+first instant) for a fixed hour and on both passes for a wildcard hour. A day field that starts with `*` (such as
+`*/2`) counts as unrestricted for the two-day-field rule, and then both day fields must match, as in Vixie cron.
+`cron.ts` has no Node or jv import, so the web app's "next three runs" helper uses the same code; its CronError carries
+exit code 2 and the scheduler turns it into a JvError.
+
+## M-017 The jobs machinery lives in jevellan-core
+
+Section 10 puts the jobs machinery in `improver/src/jobs.ts` "used by the planner", but section 2 lets the planner
+depend on core and memory only. It is `core/src/jobs.ts`: kinds register handlers (duty, origin prefix, request id,
+work task, finish); `createJob` returns the job of the same request id (exit 0) and refuses another of a kind queued
+or running for the project ("already running: J..."); `stepJobs` gives a queued job its single work task (request id
+`job:<J>`, origin `improver:<J>` or `planner:<J>`, not visible) and finishes a job when its task is done, fails it with
+the task's reason when the task failed or stopped, and waits while the task waits on the owner. The improver's and the
+planner's packages hold their kinds and templates; the bot calls `stepJobs` with each package's handlers. Schedules
+queue job rows through the store directly.
+
+## M-018 Planner and improver templates and their inputs
+
+The templates are `packages/planner/templates/plan.md` (verbatim from the brief) and
+`packages/improver/templates/improve-{memory,docs,skills}.md` (the brief's bodies, then the inputs and the closing
+instruction), candidates to become duty skills later. `finishPlan` validates the block's shape, size and goals and
+fails the job otherwise; a proposal whose title repeats an earlier one or an open task's (case-insensitive), or whose
+after task was skipped, is skipped with its reason; created tasks are queued and not started (`createTask({start:
+false})`). improve-skills always runs on the registered project `jevellan-skills` and asks its worker to export the
+cases into the worktree itself with `~/.jv/bin/jv evals route|landing --since <last job> --out <the skill's
+evals/cases.json>` (the worktree does not exist when the job builds its task), and to end with a JSON block of the
+agreements before and after.
+
+## M-019 jevellan-mcp may depend on the job and schedule packages
+
+Section 2 says mcp depends on core (and memory); section 5 says every tool "is a thin call into core, memory,
+scheduler, planner or improver" and lists schedule, goal and job tools. The dependency test allows mcp core, memory,
+scheduler, planner and improver; ui keeps everything but bot and cli.
+
+## M-020 jv doctor: models of openai-compatible providers, the service line
+
+`models:<provider>` also covers openai-compatible providers that have their key (or need none): `GET
+<baseUrl>/models` with the key as a bearer header, never printed. A local Ollama with nothing pulled is the brief's
+WARN "no models" (fix `ollama pull <model>`), an unreachable endpoint a WARN. A bot service file that is not installed
+is an informational OK line (`jv bot install-service writes it`): the bot runs in the foreground without it, loading
+it is the owner's step, and M1 allows WARN only for missing key files, Ollama without models and a Codex login.
+
+## M-021 Workers and landing checks find the owner's Playwright browsers on macOS (amends D-004)
+
+`env.playwrightBrowsersPath(ownerHome, platform)` looks for `~/Library/Caches/ms-playwright` and `~/.cache/ms-playwright`,
+the platform's own first, and uses the first that exists (or sets nothing). Workers (D-004) and landing checks (D-045)
+both use it; the owner's home still comes from the user database, never from HOME.
+
+## M-022 jv doctor's monorepo checks
+
+Groups in the lifted `--check` handling (D-013): `skills` (lines `skills`, `skills:checkout`, `skills:version`),
+`ports` (`ports:ui` 7071, `ports:mcp` 7072, `ports:bot`, bot.json's health port), `memory` (FTS5), `service` and
+`member`. The skills are compared live with install.json's checkout by `skillsTreeHash`, so a checkout that moved on
+is noticed; the per-skill line compares every installed skill with the installed router's jv-version (jv and the
+skills have separate versions). Listeners come from `lsof -nP -iTCP:<port> -sTCP:LISTEN -Fpc -w` (also from
+/usr/sbin/lsof, where macOS keeps it); a port is jv's when its pid is the one in `$JV_HOME/run/ui.pid`,
+`run/mcp.pid` or `run/bot.lock`. FTS5 is tried in process; only when that fails are other Nodes searched for one that
+works. The member line reads `launchctl list` and nothing else.
+
+## M-023 jv status text
+
+The brief's block: the bot line, then per project "name (path)", "waiting on you", "running" and "queued", and one
+"landed today ... failed ..." line. Choices: a landing task is listed under running; a queued line shows "after T..."
+or the queue reason where the step would be; a waiting line names the open landing ask ("ask-owner", with "options:
+Land now | Leave it") or the latest report's needs-decision or blocked status; running lines use providers.json's
+label (never a hard-coded model name), effort, "via <provider>", the run id and its start time; "landed today" is
+tasks done whose ended_at is today in local time, "failed" is failed or stopped in the last 24 hours; columns align
+per group and the title narrows first when a line would pass 100 characters. `--json` keeps every lifted key and adds
+`bot`. `--watch` repaints every 2 s and is refused with `--json`. The bot is alive when the pid in `bot:pid` lives and
+the heartbeat is younger than max(60 s, 3 ticks). `jv status` marks lost runs through reconcile's read-only step
+(`markLostRuns`).
+
+## M-024 The bot resumes lost runs (amends D-040)
+
+reconcile marks lost every starting or running step session whose process is gone and that has no end event, and a
+starting row with no pid for more than 60 s (its spawner died). For the newest lost run of each task's current step: a
+run that had reported advances the task by its report, as afterRun would (a verify with failing tests applies
+on_fail); one that had not is continued as `jv task resume` does (a new run on the same native session with
+"Continue.", request id `resume:<R>`, or the step placed again without a native session). The step is resumed while
+at most 3 runs in a row were lost; the fourth is a failure of the step, so a run that crashes on every start cannot
+loop. Lost recovery comes before admission and is not limited by slots.
+
+## M-025 Queued tasks start only in a free slot
+
+The check is in `advance.startStep` for a task in state queued: `jv task create`, released `--after` dependents,
+`jv task resume` of a queued task and reconcile's admission. It runs before the Jev call and again inside the
+transaction that creates the run, because concurrent creators (three `jv_task_create` calls at once in M5) would all
+pass the first check. Otherwise the task stays queued with reason exactly "waiting for a slot" and `jv task create`
+exits 0. A task that already runs is never held back (next step, on_fail retry, continue, message, answer), nor is the
+owner's own placement (`jv task override --undo`).
+
+## M-026 Admission refusals and their wake
+
+Meta `admit_attempt:<T>` holds `{at, reason}`: written on every Jev refusal of a start, cleared when a start goes
+through. reconcile retries a refused task at most once a minute; slot waits make no Jev call and are rechecked every
+tick. A retry's wake is forwarded only when its reason differs from the stored one: one wake per refusal.
+
+## M-027 Message delivery by reconcile
+
+Undelivered messages of a task whose newest live run is a running claude-tmux session with a tmux target are typed
+into its window ("From the owner:" or "From the coordinator:") and marked delivered to that run, except the ids its
+start `message` event already carried and messages younger than 10 s (`jv task message` may be typing them).
+Messages of the coordinator conversation task are always delivered when written and are never typed again.
+
+## M-028 Task origin and unstarted tasks
+
+`tasks.origin` is the given origin (checked against `TASK_ORIGIN_PATTERN` before anything is written), else
+coordinator when JV_SESSION names a coordinator session, else owner. `jv task create --origin` is internal (not in
+`--help`). Origin is not part of the request id: a repeat from another origin returns the first task.
+`createTask({start: false})` leaves the start to the bot. `jv task show --json` carries `origin`; the text shows it
+only when it is not owner.
+
+## M-029 jv task changes
+
+The committed part is `git diff <base_commit>...refs/heads/<branch>` with rename detection, read in the project
+checkout (the worktree may be archived, D-051); the uncommitted part (`git diff HEAD` and untracked files that are not
+ignored, so `.jv-evidence/` and `plan.md` never count) is read from the worktree while it exists, each file marked
+uncommitted. git runs without a shell and with `GIT_OPTIONAL_LOCKS=0`; the diff is capped at 4,000,000 characters and
+200 untracked files and passes through the redactor.
+
+## M-030 The coordinator conversation
+
+`coordinator-chat.ts` tails each coordinator's native transcript from meta `coordinator_tail:<session>` (JSON: byte
+offset, file, matched owner message ids, the usage of the last API messages), complete lines only, each chunk's events
+and new offset in one transaction that first checks the stored offset has not moved (the bot and the UI tail at the
+same time). It records text, tool calls and results, one usage event per read and the user lines; thinking is left
+out. `messageCoordinator` types ` [owner]  <text>` (send-keys for one line, a pasted buffer for text with a newline
+or a tab), records a messages row on the conversation task (M-012) with delivered_at set and a message event; the
+transcript's own copy of that line is matched to the row and not recorded twice. Typing into a coordinator window
+holds a per-window lock (`$JV_HOME/run/typing-<tmux name>.lock`) from the first key to Enter, for wake lines, owner
+lines, `/exit` and the handoff alike, so a wake line never lands inside an owner's line. Owner text is masked for
+known secrets and stripped of control characters before it is typed and stored. Transcript entries have the roles
+owner, jv (wake lines and the handoff), coordinator and tool; a turn starts at an owner or jv line.
+
+## M-031 Lint rules that keep the lifted style legal
+
+`eslint.config.mjs` is Jevellan's with this repository's ignores (build and test output, evidence, agent folders,
+`packages/ui/viewer`). A leading underscore marks a deliberately unused name and an object rest sibling may drop a key;
+tests may use `any` for parsed JSON and literal spaces in regular expressions. Every other recommended rule is an
+error. Node globals are listed by hand (no `globals` package). The compiler stays the main lint (M-010).
+
+## M-032 The secret scan, bump-version and sync-from-skills
+
+`scripts/secret-scan.mjs` scans the tracked files as they are on disk and reports file, line and the kind of shape,
+never the value (exit 0 clean, 1 found, 2 could not scan); history is opt-in (`--history`), there is no pre-push mode
+(no hooks are installed), and `--values-from DIR` adds the values of key files (M16 runs it with `~/.jv/secrets`).
+`scripts/bump-version.mjs <version>` sets one version in every package.json, every cross-workspace dependency and the
+lock file's workspace entries; `--check` reports a mismatch. `scripts/sync-from-skills.mjs` lists every file of the
+lifted runtime (src, test, templates, ui, bin, package.json) and of the skills fixture that changed in
+jevellan-skills since the lifted commit, with where each lives in the monorepo now. The scripts' tests run with
+`node --test "scripts/test/*.test.mjs"` (Node 22 does not take a folder), as part of the root `npm test`.
+
+## M-033 The public index of jevellan-core
+
+`src/index.ts` exports the lifted modules' own names, the brief's names as aliases (`land` = `landTask`, `override`
+= `overrideTask`, `doctor` = `runChecks`, `assemblePrompt` = `buildSystemAppend`, `startSession` = `startStep`,
+`resumeSession` and `retry` = `resumeTask`, `stopSession` = `stopRun`), `coordinator` with `tail`, `message` and
+`transcript`, and namespaces where names clash (advance, providers, wake, workflows, coordinatorChat). `migrate(db)` is
+not exported: the migration is a method of the Store on its own connection, and `openStore` migrates. The CLI keeps
+importing by subpath, so `jv status` loads only what it uses.
+
+## M-034 Contract schemas
+
+Where the lifted runtime has a zod schema (report fields, providers.json, landing state, Jev's questions and answers),
+`contracts/` re-exports it. Shapes that were only TypeScript types (placement and workflow state, the decisions row
+and its JSON, the events row, `jv status --json`, `jv task show --json`) are strict schemas tested against objects the
+lifted code produces, with compile-time checks that each matches its type; adding a key to one of these outputs means
+updating its schema and fixture in the same change. The A2UI envelope of a report's `ui` lives in
+`contracts/a2ui.ts` (no Node imports): version, exactly one of the four messages, a non-empty surfaceId, at most 65536
+characters; the report write path and the contracts use the same check. The request id forms jv writes (auto:, the
+coordinator conversation, `schedule:<C>:<slot>`, `plan:<J>:<i>`, `job:<J>`, the session forms) are part of the
+contract.
+
+## M-035 Acceptance journeys
+
+Every journey that could leave state runs in a JV_HOME under `~/.jv-test/<run id>/` and removes it; `lib.mjs`'s `jv()`
+needs the home given and refuses the real `~/.jv` unless the journey runs with `--real`. M2 calls the skills runtime
+through its `main()` (its `dist/cli.js` exports `main` and `COMMANDS` and prints nothing when run), built in a temporary
+copy of the skills checkout; a key the skills runtime prints and this jv drops is a failure (the coordinator reads
+those outputs), a key or flag only this jv has is listed with its reason. M3's temporary home copies the providers,
+secrets and seeds but disables Codex: every copy of the member's Codex login shares one refresh token (D-022), and an
+answer task never runs on Codex.
