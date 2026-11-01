@@ -64,7 +64,7 @@ async function main() {
     let session;
     await check('the step runs to done and its report is in the store with the native session id', async () => {
       const end = await waitForTask(home, taskId, ['done', 'failed', 'stopped', 'waiting-owner'], { timeoutMs: 15 * 60_000 });
-      session = queryOne(storeFile(home), 'SELECT s.id, s.native_session_id, r.status, r.summary FROM sessions s JOIN reports r ON r.session_id = s.id WHERE s.task_id = ? ORDER BY s.created_at DESC LIMIT 1', taskId);
+      session = queryOne(storeFile(home), 'SELECT s.id, s.native_session_id, r.status, r.summary FROM sessions s JOIN reports r ON r.session_id = s.id WHERE s.task_id = ? ORDER BY r.created_at DESC LIMIT 1', taskId);
       return { ok: end?.state === 'done' && !!session?.native_session_id && !!session?.summary, detail: `${taskId} ${end?.state}; ${session?.id} native ${session?.native_session_id ?? 'none'}; report ${session?.status}: ${(session?.summary ?? '').slice(0, 120)}` };
     });
 
@@ -73,7 +73,8 @@ async function main() {
       const { browser, page } = await uiPage(ui);
       try {
         await page.goto(`${ui.url}/t/${taskId}`);
-        const words = (session?.summary ?? '').replace(/[`*_#>[\]()]/g, ' ').split(/\s+/).filter((w) => w.length > 4).slice(0, 4);
+        const words = (session?.summary ?? '').replace(/[`*_#>[\]()]/g, ' ').split(/\s+/).filter((w) => /^[A-Za-z][A-Za-z-]{4,}$/.test(w)).slice(0, 4);
+        if (words.length < 2) return { ok: false, detail: `no report summary to look for (${session ? session.id : 'no session'})` };
         for (const w of words) await page.getByText(w, { exact: false }).first().waitFor({ timeout: 20_000 });
         const shot = join(home, '..', 'm04-task.png');
         await page.screenshot({ path: shot, fullPage: true });
