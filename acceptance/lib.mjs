@@ -215,13 +215,20 @@ export const PATH_HEAD = [NODE_BIN, join(HOME, '.local', 'bin'), '/opt/homebrew/
 /**
  * The environment of every child: the caller's, with PATH_HEAD first, without JV_HOME and JV_SESSION (each call
  * sets its own home), and without the variables of a Claude Code session the journey may itself run in (the owner
- * runs jv from a plain terminal).
+ * runs jv from a plain terminal). That includes what would point a journey's own Claude Code or Codex (M9's claude
+ * -p) at the caller's configuration or login instead of the folder and token the journey gives it: CLAUDE_CONFIG_DIR
+ * (Claude Code keeps .claude.json and projects/ there whatever HOME is), CODEX_HOME, and every ANTHROPIC_ variable
+ * (an API key, auth token or base URL wins over the CLAUDE_CODE_OAUTH_TOKEN a journey sets). `extra` may set them.
  */
 export function childEnv(extra = {}) {
   const env = { ...process.env };
   delete env.JV_HOME;
   delete env.JV_SESSION;
-  for (const key of Object.keys(env)) if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) delete env[key];
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CODEX_HOME;
+  for (const key of Object.keys(env)) {
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key.startsWith('ANTHROPIC_')) delete env[key];
+  }
   const rest = (env.PATH ?? '').split(':').filter((p) => p !== '' && !PATH_HEAD.includes(p));
   env.PATH = [...PATH_HEAD, ...rest].join(':');
   if (!env.PLAYWRIGHT_BROWSERS_PATH && existsSync(PLAYWRIGHT_BROWSERS)) env.PLAYWRIGHT_BROWSERS_PATH = PLAYWRIGHT_BROWSERS;

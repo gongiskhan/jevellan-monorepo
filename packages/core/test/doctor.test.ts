@@ -1,11 +1,11 @@
 // Doctor tests: every check against a temporary JV_HOME with fake provider homes, a fake exec (no claude, codex, lsof
-// or launchctl is ever run) and a fake fetch (no network). Every key and token here is a fake value written by the
+// or launchctl is ever run; one case spawns a stand-in shell script named codex) and a fake fetch (no network). Every key and token here is a fake value written by the
 // test. The monorepo's checks (skills against the checkout, ports, memory, service, member) have their own cases in
 // doctor-monorepo.test.ts; here they only take part in the full run.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -302,6 +302,81 @@ describe('jv doctor', () => {
     assert.equal(rec.records.get('codex')!.auth, 'unknown');
     const none = fakeExec({ 'codex --version': { code: null, stdout: '', stderr: '', error: 'not-found' } });
     assert.equal((await D.runChecks(['codex'], deps({ exec: none.exec })))[0]!.status, 'WARN');
+  });
+
+  // codex --version creates $CODEX_HOME/tmp/arg0/ on every start, so a version probe with the owner's HOME writes
+  // into ~/.codex (brief section 1). The probes of the two agent CLIs run in jv's probe home instead.
+  const ownerAgentEnv = {
+    PATH: '/usr/bin:/bin',
+    USER: 'tester',
+    HOME: ownerHome,
+    CODEX_HOME: join(ownerHome, '.codex'),
+    CLAUDE_CONFIG_DIR: join(ownerHome, '.claude'),
+    SECRET_ELSEWHERE: 'not-for-children',
+  };
+
+  test('the claude and codex version probes run in the probe home under JV_HOME, never in the owner\'s HOME', async () => {
+    const fx = fakeExec();
+    const m = byName(await D.runChecks(['claude', 'codex', 'git'], deps({ exec: fx.exec, env: ownerAgentEnv })));
+    assert.equal(m.get('claude')!.status, 'OK');
+    assert.equal(m.get('codex')!.detail, 'codex-cli 0.153.4');
+    const probeHome = join(paths.home, 'run', 'probe-home');
+    for (const command of ['claude', 'codex']) {
+      const call = fx.calls.find((c) => c.command === command && c.args[0] === '--version');
+      assert.ok(call, `${command} --version ran`);
+      const env = call.options?.env;
+      assert.ok(env, `${command} --version got its own environment, not the process's`);
+      assert.equal(env.HOME, probeHome);
+      assert.equal(env.CODEX_HOME, join(probeHome, '.codex'));
+      assert.ok(existsSync(env.CODEX_HOME!), 'CODEX_HOME exists before the probe (else Codex warns on stderr)');
+      assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
+      assert.equal(env.SECRET_ELSEWHERE, undefined);
+      assert.equal(env.PATH, '/usr/bin:/bin');
+      assert.equal(env.USER, 'tester');
+      assert.equal(call.options?.cwd, probeHome);
+    }
+    for (const dir of [probeHome, join(probeHome, '.codex')]) assert.equal((statSync(dir).mode & 0o777).toString(8), '700', dir);
+  });
+
+  test('the codex version probe reaches the child with the probe home (real spawn of a stand-in codex)', async () => {
+    // A stand-in for codex that only records the HOME and CODEX_HOME it was given; the real codex is never run.
+    const bin = join(root, 'fake-codex-bin');
+    mkdirSync(bin, { recursive: true });
+    const record = join(root, 'fake-codex-env.txt');
+    const fake = join(bin, 'codex');
+    writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n%s\\n' "$HOME" "\${CODEX_HOME-unset}" > '${record}'\necho 'codex-cli 0.0.0-fake'\n`, { mode: 0o755 });
+    const exec = (command: string, args: readonly string[], options?: ExecOptions) => D.execCommand(command === 'codex' ? fake : command, args, options);
+    const [r] = await D.runChecks(['codex'], deps({ exec, env: ownerAgentEnv }));
+    assert.equal(r!.status, 'OK');
+    assert.equal(r!.detail, 'codex-cli 0.0.0-fake');
+    const [home, codexHome] = readFileSync(record, 'utf8').split('\n');
+    assert.equal(home, join(paths.home, 'run', 'probe-home'));
+    assert.equal(codexHome, join(paths.home, 'run', 'probe-home', '.codex'));
+    assert.notEqual(home, process.env.HOME);
+    assert.ok(!existsSync(join(ownerHome, '.codex')));
+  });
+
+  test('a probe home that cannot be made leaves the agent CLI lines unprobed (WARN), never run in the owner\'s HOME', async () => {
+    const blocked = join(paths.home, 'run');
+    const saved = join(root, 'run-saved');
+    let moved = false;
+    if (existsSync(blocked)) {
+      renameSync(blocked, saved);
+      moved = true;
+    }
+    writeFileSync(blocked, 'a file where the run folder belongs');
+    try {
+      const fx = fakeExec();
+      const m = byName(await D.runChecks(['claude', 'codex'], deps({ exec: fx.exec, env: ownerAgentEnv })));
+      for (const name of ['claude', 'codex']) {
+        assert.equal(m.get(name)!.status, 'WARN');
+        assert.match(m.get(name)!.detail, /not probed: cannot create .*probe-home/);
+      }
+      assert.deepEqual(fx.calls.filter((c) => c.args[0] === '--version').map((c) => c.command), []);
+    } finally {
+      unlinkSync(blocked);
+      if (moved) renameSync(saved, blocked);
+    }
   });
 
   test('the supportedModels probe: provider env, a model not offered is WARN, a probe that cannot run is FAIL', async () => {
