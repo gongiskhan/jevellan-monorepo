@@ -768,3 +768,200 @@ nested under them and in `packages/ui`. The zod advisory (GHSA-mrhx-c7xc-m3w5, m
 constrained collections) does not apply here: zod 3 runs only in the browser on A2UI messages, which `jv_report` caps
 at 65536 characters (brief section 3) and which come from jv's own workers. The dompurify override of M-070 stays.
 `npm audit` will keep listing the zod 3 copies; that is known and accepted.
+
+## M-083 Every cut masks first, and piped output is masked as a stream
+
+The redactor matches whole values only, so a secret that crosses a cut leaves its first part unmasked if the cut comes
+first. Every bounded copy of a text that may hold a secret is now masked before it is cut: tool inputs and outputs
+(events.redactedTrim with the one TOOL_TEXT_MAX, used by transcriptEvents, claude-sdk and codex), the 300-character
+error messages of both SDK runtimes, the synthesized summary (report.synthesizeReport; llm.ts no longer cuts first),
+and the UI action context. transcriptEvents takes the redactor as a required argument rather than defaulting to the
+process redactor. Callers state which redactor they use, and tests that import the module without a JV_HOME never read
+the real ~/.jv. Output that arrives in pieces (the worktree setup command's stdout and stderr, the agent SDK's stderr
+hook, which receives decoded pipe chunks rather than lines) goes through redact.redactingWriter. It holds back the
+last (longest known value - 1) characters of the masked text until the next piece or end(). A value not yet complete
+always fits in what is held back, so it is masked whole, including values that span lines; no buffer cap is needed,
+and with no values known nothing is held. This was chosen over line buffering because a line buffer needs a cap for
+progress output without newlines, and flushing at the cap would bring the split back. Redactor.longest exposes a
+length only. The cost is that a log can lag by up to that many characters until the stream ends.
+
+## M-084 Caller text is masked on the way in, at core's choke points, and the control MCP masks on the way out
+
+Text that callers supply (task title and text, task messages and answers, the UI action's text and meta_json, goals,
+task schedules, jv memory add and jv_memory_add) is passed through the process redactor before anything is stored,
+derived from it (request id, branch slug, task.md) or typed into a pane, as M-030 already did for owner messages to
+the coordinator. The redactor masks only the exact values of jv's secret files (D-014), so text with none reaches the
+step byte for byte, and a known value is replaced by [redacted] rather than refused, matching M-030. The masking sits
+where every surface converges: createTask, messageTask and answerTask in core, addGoal in the planner, checkTaskSpec
+in the scheduler. Memory is masked in its two callers, because jevellan-memory may not depend on core. createTask
+masks before autoRequestId, so a repeated command is the same task. Write-time masking cannot cover rows written
+before this change, or before a secret file existed. So the control MCP passes every tool result (text and structured
+content) and every resource through redactValue, the same second pass the UI's sendJson makes (D-063).
+
+## M-085 Secrets of project MCP servers live in ~/.jv/secrets and never reach a command line (amends the project.json mcpServers format)
+
+project.json holds no secret. A server that needs one names a file: envFiles {NAME: file} for a stdio server's
+environment, headerFiles {Header: file} and bearerTokenFile (sent as Authorization: Bearer <content>) for an http or
+sse server. Paths resolve like other config paths (~/.jv onto JV_HOME). projectMcpServers refuses with exit 2, naming
+the field and file but never the content, any file whose real path (symlinks resolved) is outside ~/.jv/secrets, and
+any file that is missing, empty, not a file or not mode 600, by the same keyFileStatus rule jv doctor applies. Because
+the files live in secrets/, the redactor learns their values with no change of its own. A literal env or header value
+under a credential's name (a word key, apikey, token, secret, password, passwd, credential(s), auth, authorization,
+cookie or bearer) is refused and the owner is pointed to the file keys. Other literals are declared non-secret and the
+redactor does not learn them. This narrows 'the redactor must learn them' on purpose: teaching it every literal would
+mask ordinary values such as 'production' or a project path in every event, and, now that caller text is masked on the
+way in, in every task text and typed message too. Delivery: the codex runtime puts every project-server env value and
+header value into the Codex process environment. Config names them only (env_vars; env_http_headers with
+JV_MCP_<SERVER>_<HEADER>), because the SDK turns config into --config arguments. Codex has one environment for all
+servers, so a name that two servers or the worker set to different values is refused. The agent SDK runtime writes the
+project servers to <task dir>/<R>.mcp.json (mode 600) and passes it as extraArgs --mcp-config. Only the in-process
+report server stays in Options.mcpServers, so the SDK adds no inline JSON. claude-tmux keeps its existing mode 600
+file. The two files hold resolved values: copies outside secrets/, allowed as a mode 600 file and kept after the turn.
+${VAR} references with the values in the environment would avoid the copies, but expansion inside a --mcp-config file
+was not verified here, so values are written resolved.
+
+## M-086 secret-scan --values-from takes a file as well as a folder (amends M-032)
+
+--values-from PATH reads one file or every file of a folder, using the redactor's line rule (whole, per line, the
+value of NAME=value lines with a leading export and one pair of matching quotes stripped, at least 6 characters).
+M16's repository-wide check can then include ~/.jv/ui-password, which lives next to the store rather than in secrets/
+(M-044). M16 check 2 passes it once the file exists, so the UI password pasted into any tracked file is found, not
+only under acceptance/. The script still adds no shapes, does not parse providers.json and imports nothing from
+packages/core, so it keeps running without a build.
+
+## M-087 stopRun signals only a process group it can show is the run's (amends M-009)
+
+stopRun used to send SIGTERM, then SIGKILL after 10 s, to a run's recorded pgid whenever kill(-pgid, 0) succeeded. A
+waiting row (jv attach, a takeover) keeps the pid and pgid of a jv run that ended long ago, and macOS hands pids out
+in order and wraps them within hours to days. So jv task stop, --discard, MCP jv_task_stop, the UI stop and 'Leave it'
+could reach any group that now holds the number: a shell job, the tmux server, a launchd agent. runGroupToSignal now
+decides. Only starting and running rows have a process of their own. The recorded pid must lead the recorded group.
+While the leader lives, it must not be a zombie, ps must put it at the head of that group, and its command line must
+name the run. That is M-009's check, except that an unreadable command line now counts as not shown: isRunAlive keeps
+counting it as alive for markLost, because 'alive when in doubt' is the safe default for liveness and the unsafe one
+for a kill. When the leader is gone but the group lives on, the group is signalled only if one of its members names
+the run. Both verifiers' positions were rejected here. 'Never signal' leaves every crashed run's leftovers running.
+'Always signal' rests on the rule that a number is not reused while its group has members, but that only protects the
+current holder of the number: if an earlier holder's group outlived its own leader, the group is someone else's.
+Before the SIGKILL the group is still signalled unless its leader is alive and runs something else, because the
+SIGTERM went to a group already shown to be the run's, and the number cannot change hands within the 10 s grace while
+the group has members. When no signal is sent, the row is still stopped with one end event, and
+StopRunResult.notSignalled says why. The cost: leftovers of a crashed run that carry no run id stay running after a
+stop. They usually end when their parent's pipes close, and leaving them is the safe failure under 'never stop the
+owner's processes'. attach.ts is unchanged: waiting rows keep their old pid and pgid as history, and the state rule
+makes them impossible to signal.
+
+## M-088 The worktree setup's kill ends at close
+
+The setup command runs as a detached sh (pgid = its pid). It is killed on its timeout and on the run's
+AbortController, which lives for the whole turn. Its abort listener was never removed, so a jv task stop hours into a
+first turn sent SIGKILL to the setup's old group number, which could belong to anything by then. The kill now lives
+only until the child's close (or error): finish() sets a settled flag and removes the listener. Beyond the verifiers'
+fix, the kill also does nothing once the shell has exited and a process with its pid is alive (or answers EPERM),
+since that pid now belongs to another process. It is deliberately not gated on the shell's exit. Between exit and
+close, a member of its group (a backgrounded child holding the pipes) can still be running, and the number cannot be
+reused while that member lives, so the timeout still ends a setup like `sleep 6 & echo started`. codex-control.ts
+close() is left as it is: its window between the child's exit and the signal is milliseconds.
+
+## M-089 The bot lock checks its holder's start time; jv bot stop signals only a checked holder (amends M-045 and M-050)
+
+A stale bot.lock (the bot killed, a closed terminal, a reboot) whose pid was later reused by any process with a word
+'bot' in its argv, such as a path like ~/dev/telegram-bot/index.js, counted as a live bot. jv bot start then refused
+with 'bot already running (pid N)' and pointed the owner at jv bot stop, which sent that process SIGTERM. The lock
+already records startedAt. A holder must now also have started no later than that, read with ps -o lstart through
+jevellan-core/proc's new processStartedAt. This is the rule run/ui.pid has had since M-044, plus 2 s of slack, because
+Linux's procps works lstart out from the boot time and can land a second late, while a pid is not handed out again
+within seconds of its holder's start. checkLockHolder answers holder, stale, or unverified (alive, but its command
+line or start time cannot be read, or the lock has no startedAt). A taker treats unverified as held, so two bots never
+run. jv bot stop signals only a holder. For an unverified one it exits 2, naming the pid and why, instead of the exit
+0 'bot not running' both verifiers suggested: the same holder makes jv bot start refuse with 'bot already running', so
+saying 'not running' would contradict it. The argv match was not tightened to the jv entry plus 'bot start'. The bot
+also runs from ~/.jv/bin/jv, bin/jv.mjs, the plist and in-process hosts, and a match that tight would make a live bot
+look stale and let a second bot take its lock. ui/server/pidfile.ts still has its own processStartedAt.
+
+## M-090 The agent CLIs' version probes run in $JV_HOME/run/probe-home
+
+jv doctor's `claude --version` and `codex --version` run with the base variables only (PATH, USER, LANG, TERM, SHELL,
+TMPDIR), HOME = `$JV_HOME/run/probe-home` and CODEX_HOME = its `.codex`. Both are created first with mode 700, and the
+probe's cwd is that folder. CLAUDE_CONFIG_DIR is never set, as for workers (env.ts). Codex 0.154 creates
+`$CODEX_HOME/tmp/arg0/` on every start, `--version` included, so the probe with the owner's HOME wrote into `~/.codex`
+on every `jv doctor`, MCP `jv_doctor` call and M1 run, which brief section 1 forbids. The folder is jv's own under
+`$JV_HOME/run`, not a provider home, so the check also works when providers.json is broken or has no
+codex-subscription provider. Codex rotates its unlocked arg0 folders, so the probe home holds one at a time.
+CODEX_HOME must exist, or Codex prints a warning on stderr. Run before bootstrap, the probe creates `~/.jv` with mode
+700, which bootstrap would set anyway (opening the store already creates the folder). The claude probe shares the
+folder although Claude Code 2.1.316 writes nothing on `--version`, so a later version cannot write into `~/.claude`
+either. git and tmux keep the process environment, because they read no agent configuration. When the folder cannot be
+created, the line is WARN and the CLI is not run. execCommand keeps its process.env default for lsof, launchctl and
+the node probes.
+
+## M-091 M17 reads jv's files for calls of the jevellan command
+
+M17's third check no longer uses `git grep -E`. The old pathspec `packages/*/src` matched no file without `:(glob)`,
+so only `packages/ui/server` was searched, and the check could pass while searching nothing. macOS git grep -E also
+has no `\b` or `\s`, and no line-based grep sees a call wrapped after its parenthesis, which is how this code base
+wraps long calls. The check lists files with `git ls-files --cached --others --exclude-standard` for each of
+`:(glob)packages/**`, `bin`, `scripts` and `acceptance`. It fails when any of them lists no file or git fails. It
+reads every text file and looks for spawn, spawnSync, exec, execSync, execFile, execFileSync, doctor's execCommand or
+lib.mjs's run whose first string argument names jevellan: bare, by path, or as a word of a shell command, also across
+line breaks. The scope covers all of packages/, tests included, plus scripts and the journeys, because the brief says
+the run never runs `jevellan`, and journeys and tests are part of the run. The regex is call-shaped, so the names
+'jevellan' in the MCP server and the version line do not match, and neither does the regex's own source. A call found
+is reported by file, line and function, never by its argument: the detail goes into the tracked acceptance/RESULTS.md,
+which the check also reads, and a quoted call there would fail every later run (the M16 trap, M-037). The check stays
+a heuristic: a call through a variable holding the name is not seen. The pid and mtime checks remain the live
+enforcement.
+
+## M-092 Journey children get none of the caller's Claude or Codex configuration or Anthropic login
+
+acceptance/lib.mjs childEnv drops CLAUDE_CONFIG_DIR, CODEX_HOME and every ANTHROPIC_ variable from the caller's
+environment, as it already dropped CLAUDECODE and CLAUDE_CODE_*. A caller can still set them through `extra`. Claude
+Code 2.1.316 keeps `.claude.json` and `projects/` under CLAUDE_CONFIG_DIR whatever HOME is (checked with `claude mcp
+add --scope user` in scratch folders). A journey run from a session launched with
+`CLAUDE_CONFIG_DIR=~/.claude-jevellan-build` (brief section 16) would therefore have M9's `claude -p` record the run's
+folder in that live config instead of the run's own HOME, which M-043 relies on. An inherited ANTHROPIC_API_KEY,
+ANTHROPIC_AUTH_TOKEN or ANTHROPIC_BASE_URL would win over the claude-main token M9 sets and run M9 on the caller's
+login or endpoint. CODEX_HOME is dropped for the same reason in case a journey ever runs Codex itself. jv's own
+children were never affected, because env.ts and the doctor build their environments from an allowlist.
+
+## M-093 The version 1 backup is copied under the migration's write lock (amends M-011)
+
+M-011 copied a version 1 store to store.sqlite.v1.bak before the migration transaction, and only if no file of that
+name existed. The copy now runs inside that transaction. migrateV1ToV2 takes BEGIN IMMEDIATE, rechecks the version,
+and only then copies the store, before the transaction's first write. VACUUM INTO cannot run inside a transaction, so
+the copy goes through a second, read-only connection: VACUUM INTO works there while the first connection holds the
+write lock. Because no write can land between the copy and the migration, the backup is exactly the version 1 store
+that was migrated. A second opener that arrives meanwhile waits for the lock (busy_timeout 5000, six tries with
+backoff, about 31 s, then exit 2 'the store is busy (...); try again') and then finds version 2. It no longer copies
+into the same file and fails with 'table projects already exists'. The copy is written to store.sqlite.v1.bak.tmp,
+which is created empty with mode 600 so it is never readable by others. It is then fsynced (VACUUM INTO does not
+sync), checked the same way as an existing backup, and renamed into place. A crash or a write error midway leaves the
+store at version 1. This process's own unpublished copy is removed: a full disk is the likely cause, and it is not
+owner data, since the store it copies is intact. A staging file left by an opener that died is set aside as
+.v1.bak.partial-<UTC time> with its journal. Lock-free staging was rejected, where each opener writes its own uniquely
+named copy and publishes it with link(2): every concurrent opener would copy the whole store, and it needs an ordering
+rule so that a loser does not shelve the winner's good backup. The lock is held for the copy, about 0.6 s for a 154 MB
+store, once per store.
+
+## M-094 An existing .v1.bak is kept only when it holds what the store holds
+
+Before a migration copies the store, any existing store.sqlite.v1.bak is checked against the store as it is under the
+lock. To be kept, it must pass all of these: no -journal, -wal or -shm beside it (an interrupted write leaves a hot
+journal, and SQLite would roll it back into the file on open, so such a file is never opened); it opens read-only;
+PRAGMA quick_check is ok; schema_version is 1; its sqlite_master SQL is the same; and every table has the same rows,
+compared one row at a time in primary key order. A file that passes is kept as it is, so a migration that failed after
+its copy reuses it on the next open, and repeated failures do not pile up copies. Any other file is renamed, side
+files first so a journal never pairs with the next file of that name, to .v1.bak.invalid-<UTC time> when it is not a
+complete version 1 store (empty, not a database, damaged, a journal beside it) or to .v1.bak.prev-<UTC time> when it
+is a complete version 1 store with other contents (an older copy, or another store's). Then a fresh copy is taken.
+Nothing is overwritten or deleted. The only file the migration ever removes is this process's own unpublished staging
+copy. A row comparison was chosen over a fingerprint (row counts, max ids) because a stale copy can differ only in
+updated rows or meta values.
+
+## M-095 Registered extensions are ensured after every open of a schema 2 store (amends M-011)
+
+migrate() now ends every successful open at schema 2 with ensureExtensions(). Before, when another process created or
+migrated the store while this one waited for the write lock, the early returns inside the create and migration
+transactions skipped it. A host that registers no extension, such as the Stop hook or the bare jv-worker-mcp, could
+then leave a memory-registered process with no memory tables until some later open. The cost is one present() read per
+extension, and the write lock is taken only when something is missing, so opening an up-to-date store stays lock-free.

@@ -252,3 +252,100 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   deleted), M11 9/9 (the scheduled task 33 s after the bot's start; pause held for 70 s), M12 10/10 (the plan job
   proposed 2 tasks with an after link; a second run the same day returned the same job), M14 7/7 (temporary owner
   home, M-071).
+- 2026-11-01 Before the secrets fixes, a made-up 97-character value in secrets/ starting at character 3950 of a tool
+  text kept its first 50 characters unmasked in the stored event, because the text was cut to 4000 and masked after;
+  starting at 3990, 10 characters. The same order of cut, then mask, held for the 300-character error messages of both
+  SDK runtimes, the synthesized llm summary and the UI action context. The worktree setup log and the agent SDK stderr
+  were masked chunk by chunk. Checked with unit tests on the unchanged source.
+- 2026-11-01 Before the fix, codex runs put project MCP env and header values on the Codex command line: a fake codex
+  binary under @openai/codex-sdk 0.166.0 recorded '--config mcp_servers.tracker.env.TRACKER_REGION="..."' and
+  '--config mcp_servers.docs.http_headers.X-Project="..."'. The Agent SDK 0.3.316 passed non-sdk servers as inline
+  '--mcp-config {"mcpServers":{...}}' with their env and headers. Values listed in Options.extraArgs become '--<key>
+  <value>'. Servers of type sdk with an instance stay in-process and trigger no inline --mcp-config.
+- 2026-11-01 Claude Code as bundled with the Agent SDK 0.3.316 loads servers from a --mcp-config file passed through
+  extraArgs beside the SDK's in-process server: system/init listed tracker with source 'dynamic' and jv with source
+  'sdk', both connected, and the stdio server received the env written in the file. Temp HOME and CLAUDE_CONFIG_DIR,
+  ANTHROPIC_BASE_URL a dead loopback port, no model reached.
+- 2026-11-01 Codex 0.166.0 forwards the variables named in a stdio server's env_vars from its own environment and
+  sends env_http_headers values from its environment as request headers. Checked with codex exec against a temp
+  CODEX_HOME, a fake model provider on a dead port, a recording stdio server and a local HTTP server. `codex mcp list
+  --json` shows both fields parsed. codex exec waits on stdin ('Reading additional input from stdin...') unless stdin
+  is closed.
+- 2026-11-01 The Agent SDK calls the stderr option with decoded pipe chunks (sdk.mjs: child.stderr on data through a
+  StringDecoder), not lines, so a value can be split between two calls.
+- 2026-11-01 Before the fix, caller text was stored and typed as given: with a made-up value in secrets/, createTask
+  stored it in title, task_text and task.md; messageTask stored it and typed 'From the owner: ...<value>'; answerTask,
+  jv memory add, jv_memory_add, addGoal and addSchedule stored it; jv_memory_search and the jv://tasks/{id} resource
+  returned rows holding it. Checked with unit tests in scratch homes.
+- 2026-11-01 Before the fix, scripts/secret-scan.mjs --values-from <home>/ui-password exited 2 with ENOTDIR, and a
+  UI-password value in a tracked docs file passed M16's scan arguments (--values-from ~/.jv/secrets) with exit 0.
+  Checked in a scratch repository and home.
+- 2026-11-01 Process signalling: jv attach leaves a waiting row with the pid and pgid of a jv run that has ended, and
+  stopTask passed every waiting row to stopRun. The verifier's script, rerun in a scratch JV_HOME (fake tmux attach,
+  then the recorded pid pointed at a detached `sleep 300` that leads its own group): on main stopTask --discard killed
+  the sleep with SIGTERM; on the fixed branch it stopped the row in 304 ms and left the sleep alive.
+- 2026-11-01 On this machine `ps -ww -A -o pid=,pgid=,args=` lists the whole process table (657 rows, about 225 KB) in
+  about 60 ms. `LC_ALL=C ps -o lstart= -p <pid>` prints a date like `Sun Nov 1 21:34:26 2026`, which Date.parse reads.
+- 2026-11-01 `node -e <code> --session R` is refused by Node ('bad option: --session'); `node -e <code> -- --session
+  R` passes the words through to the script.
+- 2026-11-01 runWorktreeSetup on main left its abort listener on the run's AbortController after an `echo setup` had
+  finished (getEventListeners(signal, 'abort') was 1), and a later abort called process.kill on the old setup group;
+  with the fix the count is 0 and no call is made.
+- 2026-11-01 jv bot stop against a stale bot.lock that names `node <dir>/owner-telegram-bot/index.mjs` (built CLI,
+  scratch JV_HOME). On main the process got SIGTERM and acquireBotLock refused 'bot already running'. With the fix, a
+  lock whose startedAt is older than the process start gives exit 0 'bot not running' and the lock is taken over; a
+  plain '<pid>' lock gives exit 2 'could not verify that pid N is the bot'. The process was untouched both times.
+- 2026-11-01 doctor.ts reads no process start times; before this change only packages/ui/server/pidfile.ts did (ps -o
+  lstart, LC_ALL=C). jevellan-core/proc now has processStartedAt.
+- 2026-11-01 codex-cli 0.154.0 creates `$CODEX_HOME/tmp/arg0/codex-arg0XXXX/` (.lock plus the symlinks apply_patch,
+  applypatch and codex-execve-wrapper) on every start, `--version` included, and the folder stays after exit. With
+  CODEX_HOME unset it uses `$HOME/.codex` (created if missing). With CODEX_HOME pointing at a missing folder it writes
+  nothing but prints "WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to ... but
+  that path does not exist" on stderr. Repeated runs in one home leave one arg0 folder, because each run removes the
+  unlocked ones. Checked with env -i and scratch HOME, CODEX_HOME and TMPDIR.
+- 2026-11-01 With a scratch HOME and TMPDIR, `claude --version` (2.1.316), `git --version` (2.56.0) and `tmux -V`
+  (3.5a) write nothing under HOME or TMPDIR.
+- 2026-11-01 Before the probe-home change, jv doctor's `codex --version` ran with the owner's HOME (execCommand's
+  process.env default), so every `jv doctor`, MCP `jv_doctor` call and M1 run wrote into ~/.codex/tmp/arg0. After it,
+  a real `jv doctor --check codex --check claude --json` with a temporary JV_HOME was OK for both, the arg0 folder
+  appeared under `$JV_HOME/run/probe-home/.codex`, and `ls -la ~/.codex/tmp/arg0` was identical before and after.
+- 2026-11-01 Claude Code 2.1.316 with both HOME and CLAUDE_CONFIG_DIR set keeps its user config under
+  CLAUDE_CONFIG_DIR: `claude mcp add --scope user` wrote `$CLAUDE_CONFIG_DIR/.claude.json` and
+  `$CLAUDE_CONFIG_DIR/backups/` and nothing under HOME (scratch folders, nonessential traffic disabled, no model
+  reached). A tool shell of a Claude Code session carries `CLAUDECODE=1`, so variables a session is launched with
+  reach the journeys it runs.
+- 2026-11-01 git 2.56.0 pathspecs: `git ls-files -- 'packages/*/src'` lists 0 files, while
+  `':(glob)packages/*/src/**'` lists 132 and `'packages/*/src/*'` many. A wildcard pathspec without :(glob) has to
+  match the whole path. M17's old grep therefore searched only packages/ui/server and passed with a committed spawn of
+  jevellan in packages/core/src (scratch clone of main). The new check finds that call, a call wrapped across lines,
+  an absolute-path execFileSync, a shell string, cp.spawnSync, and untracked files under acceptance/ and
+  packages/core/src, and passes on the clean tree with 508 files searched.
+- 2026-11-01 VACUUM INTO through a second connection opened readOnly succeeds while another connection on the same
+  file holds BEGIN IMMEDIATE. It writes a rollback-journal database (header bytes 18-19 are 1), not a WAL one, accepts
+  an existing empty target file, and keeps that file's mode. Node 22.22.0, SQLite 3.50.4. Checked with a scratch
+  script on a temporary store and through store-v2.test.ts, which asserts the backup is mode 600 with no side files.
+- 2026-11-01 Before the migration fix, six child processes opening one 20 MB version 1 store behind a file barrier had
+  at least one opener fail with 'table projects already exists' in 5 of 5 runs (store-v2.test.ts '6 processes open a
+  version 1 store at once' run against main's store.ts). With the copy under the write lock: 8 runs of 3 rounds each,
+  and 3 runs of 6 worker threads (the reviewers' race-threads.mjs), all ended with every opener at schema 2 and one
+  backup.
+- 2026-11-01 Before the migration fix, the 1-to-2 migration took an empty, random-bytes or interrupted (hot -journal)
+  store.sqlite.v1.bak as its backup, as well as a complete but stale or foreign version 1 copy. An opener with an
+  extension registered that waited while a host without it migrated or created the store opened it without the
+  extension's tables. All checked with store-v2.test.ts against main's store.ts.
+- 2026-11-01 A 154 MB version 1 store (15000 events of 10 KB) migrates on first open in 0.63 s, copy, check and
+  migration included. SIGINT to the opener during its copy left the store at version 1 with store.sqlite.v1.bak.tmp
+  (3.4 MB, mode 600) and a 1 KB journal. The next open set both aside as .v1.bak.partial-<time> and took a complete
+  backup (15000 events, quick_check ok). A copy that fails on a write (ulimit -f with SIGXFSZ ignored, standing in for
+  a full disk) throws 'could not copy ... before migrating it (disk I/O error); the store is unchanged' and leaves no
+  partial file, and the next open migrates. Checked with scratch scripts on temporary stores, plus the
+  store-v2.test.ts write-error test.
+- 2026-11-01 Phase 7 review of what is crucial (brief section 13, phase 7): four reviewers (secrets handling, the
+  never-delete rules, the member and the owner's configuration untouched, schema migration) and two independent
+  verifiers per finding. 18 findings; 12 confirmed by both verifiers and fixed with reproducing tests (M-083 to
+  M-095); 2 disputed (journey children inheriting CLAUDE_CONFIG_DIR, extensions skipped after another process
+  migrated) reproduced as real and fixed; 4 refuted by both verifiers and left (improve-memory rewording in place:
+  the memory keeps its id and the job's result_json records the change; M17's file check and its exclusions: the
+  exclusions are the member daemon's own write paths of M-036). Known and left: landing check tails are cut before
+  masking (same class as M-083, lower likelihood), event rows written before M-083 are not rewritten (the MCP and UI
+  mask on the way out), and `jv bot start` in a terminal ignores SIGHUP's default (its lock is now harmless).
