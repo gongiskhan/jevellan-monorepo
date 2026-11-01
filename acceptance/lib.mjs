@@ -910,5 +910,6 @@ export async function uiPage(ui, { width = 1280, height = 800, colorScheme = 'li
 
 /** Whether the page scrolls sideways (the visual rule of section 7: none at 390 px). */
 export async function hasHorizontalScroll(page) {
-  return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+  // Runs in the page; the document is the browser one.
+  return page.evaluate(() => { const d = globalThis.document.documentElement; return d.scrollWidth > d.clientWidth + 1; });
 }
