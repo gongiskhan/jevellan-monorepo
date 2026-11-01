@@ -231,7 +231,14 @@ describe('jv doctor', () => {
     assert.deepEqual([...new Set(groups)].slice(-4), ['model-descriptions', 'ports', 'service', 'member']);
     assert.ok(!results.some((r) => r.status === 'FAIL'), JSON.stringify(results.filter((r) => r.status === 'FAIL')));
     // Jev got the key in the header, from the file.
-    assert.deepEqual(ff.seen, [{ url: 'https://api.typesafe.ai/v1/models', auth: `Bearer ${FAKE_JEV}` }]);
+    // Jev with its key; the local Ollama's model list without one (M-020). No other provider is asked.
+    assert.deepEqual(
+      [...ff.seen].sort((a, b) => a.url.localeCompare(b.url)),
+      [
+        { url: 'http://127.0.0.1:11434/v1/models', auth: null },
+        { url: 'https://api.typesafe.ai/v1/models', auth: `Bearer ${FAKE_JEV}` },
+      ],
+    );
   });
 
   test('the Claude probe: cheapest model, provider HOME, token only in the environment', async () => {
