@@ -1,9 +1,10 @@
 // git.ts against temporary repositories: the task worktree (created from the base, reused on a repeat, refused when
 // the branch or the folder is in the way), parseWorktrees, uncommitted files, and the worktree setup command (once
-// per worktree, output in the session log, one event, a failure fails and is tried again).
+// per worktree, output in the session log, one event, a failure fails and is tried again, its kill ends with it).
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { getEventListeners } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -151,6 +152,54 @@ test('runWorktreeSetup runs once per worktree, logs the output and records one e
 
     const other = store.createSession({ project_id: project.id, task_id: task.id, step_id: step.id, request_id: 's4', kind: 'step', runtime: 'llm', provider: 'p', model: 'm', effort: 'low', cwd: repo }).row;
     assert.equal(await G.runWorktreeSetup(store, other, { env }), undefined, 'a run outside the worktree skips it');
+  } finally {
+    store.close();
+  }
+});
+
+test('the setup child\'s abort listener ends with the child; a timeout still kills a group whose shell exited but whose child holds the output', async () => {
+  const store = openStore();
+  try {
+    const repo = join(home, 'repo-setup-abort');
+    makeRepo(repo);
+    const project = store.createProject({ name: 'setup-abort', path: repo, default_branch: 'main' }).row;
+    const session = (key: string) => {
+      const wt = join(home, 'worktrees', 'setup-abort', `task-${key}`);
+      G.createWorktree({ repo, path: wt, branch: `jv/task-${key}`, base: 'main' });
+      const task = store.createTask({ project_id: project.id, request_id: `abort-${key}`, kind: 'single', title: 'T', task_text: 'x', workflow_json: '{}' }).row;
+      store.updateTask(task.id, { worktree_path: wt, branch: `jv/task-${key}` });
+      const step = store.createStep({ task_id: task.id, ordinal: 1, duty: 'implement' }).row;
+      return store.createSession({ project_id: project.id, task_id: task.id, step_id: step.id, request_id: `abort-s-${key}`, kind: 'step', runtime: 'claude-sdk', provider: 'p', model: 'm', effort: 'high', cwd: wt }).row;
+    };
+    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home };
+
+    // The run's controller lives for the whole turn: a stop long after the setup ended must not reach the setup's
+    // old process group, whose number may belong to another process by then.
+    const controller = new AbortController();
+    const rec = await G.runWorktreeSetup(store, session('aaaaaa'), { env, command: 'echo setup', signal: controller.signal });
+    assert.equal(rec?.status, 'ok');
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'the abort listener outlived the setup');
+    const kills: unknown[][] = [];
+    const realKill = process.kill;
+    process.kill = ((...args: unknown[]) => {
+      kills.push(args);
+      return true;
+    }) as typeof process.kill;
+    try {
+      controller.abort();
+    } finally {
+      process.kill = realKill;
+    }
+    assert.deepEqual(kills, [], 'a signal went to the finished setup\'s group');
+
+    // While the shell has exited but a member of its group holds the pipes, the group is still the setup's (its number
+    // cannot be handed out while it has members): the timeout kills it instead of waiting for the child.
+    const t0 = Date.now();
+    await assert.rejects(
+      G.runWorktreeSetup(store, session('bbbbbb'), { env, command: 'sleep 6 & echo started', timeoutMs: 500 }),
+      refusedErr(/timed out/),
+    );
+    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
   } finally {
     store.close();
   }

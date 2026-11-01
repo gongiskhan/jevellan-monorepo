@@ -3,7 +3,9 @@
 //   jv bot start             the bot in the foreground (what the service file runs) until SIGTERM or Ctrl-C; prints
 //                            one start line (with --json, {bot: the start facts}) before the first tick
 //   jv bot stop              SIGTERM to the pid in $JV_HOME/run/bot.lock, then waits up to 10 s for it to go; "bot
-//                            not running" (exit 0) when no live bot holds the lock; exit 2 when it did not stop
+//                            not running" (exit 0) when no live bot holds the lock; exit 2 when it did not stop, or
+//                            when the pid cannot be shown to be the bot that wrote the lock (checkLockHolder: its
+//                            command line and its start time against the lock's), so a reused pid is never signalled
 //   jv bot status            from the store, so it works when the bot is not running; --json is {bot, config,
 //                            service} (jevellan-bot's botStatusView), the contract the MCP tool and the UI share
 //   jv bot tick              exactly one tick under the bot lock, then exit; prints the tick's summary
@@ -15,13 +17,14 @@ import { resolve } from 'node:path';
 import type { CommandIo, ParsedArgs } from '../command.js';
 import { flagString } from '../command.js';
 import {
+  botLockFile,
   botStatusView,
+  checkLockHolder,
   formatBotStatus,
   formatInstallService,
   formatTick,
   installService,
   lastBotError,
-  lockHolderAlive,
   readBotConfigOrDefaults,
   readBotLock,
   runBot,
@@ -49,9 +52,15 @@ function startText(info: BotStarted): string {
 
 async function stop(io: CommandIo): Promise<number> {
   const holder = readBotLock();
-  if (!holder || !lockHolderAlive(holder.pid)) {
+  const check = holder ? checkLockHolder(holder) : undefined;
+  if (!holder || check?.state === 'stale') {
     io.result({ stopped: false, pid: holder?.pid ?? null, reason: 'bot not running' }, 'bot not running');
     return 0;
+  }
+  if (check?.state !== 'holder') {
+    throw refused(
+      `could not verify that pid ${holder.pid} is the bot (${check?.why ?? 'unknown'}); jv bot stop sends no signal on a guess. If no bot runs, remove ${botLockFile()}`,
+    );
   }
   const pid = holder.pid;
   process.kill(pid, 'SIGTERM');

@@ -1,7 +1,9 @@
 // The launcher and `jv run`, with a fake runtime module and no model: createRun, a detached spawnRun through the
-// compiled CLI, the end state and afterRun, resume messages, lost runs, stopRun, and a runtime not built yet.
+// compiled CLI, the end state and afterRun, resume messages, lost runs, stopRun (and the groups it never signals: a
+// waiting row's, a reused pid's, a dead leader's group nothing in which names the run), and a runtime not built yet.
 
 import assert from 'node:assert/strict';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -343,3 +345,175 @@ test('a stop written while the run prepares its turn keeps the owner\'s reason; 
   assert.equal(JSON.parse(end.payload).reason, 'overridden by the owner: model-small low');
 });
 
+
+// ---- stopRun signals only a group it can show is the run's -------------------------------------------------------
+
+/** A process this test starts in its own process group (pid = pgid), with `words` in its command line. */
+function ownGroup(code: string, ...words: string[]) {
+  const child = spawn(process.execPath, ['-e', code, ...words], { detached: true, stdio: 'ignore' });
+  child.unref();
+  started.push(child);
+  return child;
+}
+const started: ChildProcess[] = [];
+after(() => {
+  // Only the groups this test started and that node has not seen exit (so their number is still theirs).
+  for (const c of started) {
+    if (c.pid !== undefined && c.exitCode === null && c.signalCode === null) {
+      try {
+        process.kill(-c.pid, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  }
+});
+const IDLE = 'setInterval(() => {}, 1000)';
+/** Ignores SIGTERM and says so on stdout once its handler is in place. */
+const STUBBORN = 'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)';
+const settle = () => new Promise((r) => setTimeout(r, 400));
+const untouched = (c: ChildProcess) => c.exitCode === null && c.signalCode === null;
+
+/** The first `n` lines a child writes to its stdout pipe; the pipe is closed after them. */
+function lines(child: ChildProcess, n: number): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    child.stdout!.on('data', (d: Buffer) => {
+      buf += d.toString('utf8');
+      const got = buf.split('\n').filter((l) => l !== '');
+      if (got.length >= n) {
+        child.stdout!.destroy();
+        resolve(got.slice(0, n));
+      }
+    });
+    child.once('exit', () => reject(new Error(`exited before ${n} lines: ${buf}`)));
+  });
+}
+
+function liveRow(name: string, state: 'starting' | 'running' | 'waiting', pid: number, pgid: number) {
+  const s = seedTask(store, home, { name });
+  const run = newRun({ taskId: s.taskId, stepId: s.stepIds[0]! });
+  store.setSessionState(run.id, state, 'test', { pid, pgid });
+  return run;
+}
+
+function ends(id: string) {
+  return store.listEvents(id).filter((e) => e.kind === 'end');
+}
+
+test('stopRun sends no signal for a waiting row: jv attach keeps the pid of a jv run that has ended, and the number may be someone else\'s now', async () => {
+  const foreign = ownGroup(IDLE);
+  await settle();
+  const run = liveRow('stop-waiting', 'waiting', foreign.pid!, foreign.pid!);
+  const r = await launcher.stopRun(store, run.id, 'discarded by the owner', { graceMs: 500 });
+  await settle();
+  assert.equal(r.signalled, false);
+  assert.equal(untouched(foreign), true, `the foreign group was signalled (${foreign.signalCode})`);
+  assert.equal(store.getSession(run.id)!.state, 'stopped');
+  assert.equal(ends(run.id).length, 1);
+  assert.match(r.notSignalled ?? '', /waiting/);
+});
+
+test('stopRun sends no signal when the recorded pid now runs something else, or does not lead the recorded group', async () => {
+  // A reused pid: a live group leader whose command line does not name the run.
+  const foreign = ownGroup(IDLE);
+  await settle();
+  const reused = liveRow('stop-reused', 'running', foreign.pid!, foreign.pid!);
+  const r = await launcher.stopRun(store, reused.id, 'stopped by the owner', { graceMs: 500 });
+  await settle();
+  assert.equal(r.signalled, false);
+  assert.equal(untouched(foreign), true, `the reused pid's group was signalled (${foreign.signalCode})`);
+  assert.equal(store.getSession(reused.id)!.state, 'stopped');
+  assert.equal(ends(reused.id).length, 1);
+  assert.match(r.notSignalled ?? '', /does not name/);
+
+  // A process that names the run but whose recorded group is another one: that group is not the run's to signal.
+  const s = seedTask(store, home, { name: 'stop-not-leader' });
+  const row = newRun({ taskId: s.taskId, stepId: s.stepIds[0]! });
+  const named = ownGroup(IDLE, 'run', row.id);
+  const other = ownGroup(IDLE);
+  await settle();
+  store.setSessionState(row.id, 'running', 'test', { pid: named.pid!, pgid: other.pid! });
+  const r2 = await launcher.stopRun(store, row.id, 'stopped by the owner', { graceMs: 500 });
+  await settle();
+  assert.equal(r2.signalled, false);
+  assert.equal(untouched(other), true, 'the other group was signalled');
+  assert.equal(untouched(named), true);
+  assert.equal(ends(row.id).length, 1);
+});
+
+test('a group whose leader is gone is stopped only when one of its members names the run', async () => {
+  const leftover = (words: string) =>
+    spawn('sh', ['-c', `"${process.execPath}" -e '${IDLE}' ${words} & exit 0`], { detached: true, stdio: 'ignore' });
+  const membersOf = (pgid: number) => {
+    const out = execFileSync('ps', ['-A', '-o', 'pid=,pgid='], { encoding: 'utf8' });
+    return out.split('\n').map((l) => l.trim().split(/\s+/).map(Number)).filter(([, g]) => g === pgid).map(([p]) => p!);
+  };
+  const waitExit = (c: ChildProcess) => new Promise<void>((r) => (c.exitCode !== null ? r() : c.on('exit', () => r())));
+
+  // Not the run's: the leader exited and what is left names nothing of the run (a later holder of the number).
+  const strangers = leftover('strangers');
+  started.push(strangers);
+  await waitExit(strangers);
+  await settle();
+  const [stranger] = membersOf(strangers.pid!);
+  assert.ok(stranger, 'the leftover is in the group');
+  const a = liveRow('stop-strangers', 'running', strangers.pid!, strangers.pid!);
+  const ra = await launcher.stopRun(store, a.id, 'stopped by the owner', { graceMs: 500 });
+  await settle();
+  assert.equal(ra.signalled, false);
+  assert.equal(launcher.isAlive(stranger), true, 'the strangers were signalled');
+  assert.equal(ends(a.id).length, 1);
+  try {
+    process.kill(stranger!, 'SIGKILL');
+  } catch {
+    // gone
+  }
+
+  // The run's own leftovers: the jv run leader crashed, a child naming the run is still in its group.
+  const s = seedTask(store, home, { name: 'stop-leftovers' });
+  const b = newRun({ taskId: s.taskId, stepId: s.stepIds[0]! });
+  const crashed = leftover(`-- --session ${b.id}`);
+  started.push(crashed);
+  await waitExit(crashed);
+  await settle();
+  const [child] = membersOf(crashed.pid!);
+  assert.ok(child);
+  store.setSessionState(b.id, 'running', 'test', { pid: crashed.pid!, pgid: crashed.pid! });
+  const rb = await launcher.stopRun(store, b.id, 'stopped by the owner', { graceMs: 3000 });
+  assert.equal(rb.signalled, true, rb.notSignalled);
+  await waitFor('the leftover to go', () => !launcher.isAlive(child) || undefined);
+  assert.equal(ends(b.id).length, 1);
+});
+
+test('after the SIGTERM, a leader that ignores it, and a child left in the group after the leader went, are killed', async () => {
+  // The leader names the run and ignores SIGTERM: still the run's when the grace ends, so SIGKILL.
+  const s = seedTask(store, home, { name: 'stop-stubborn' });
+  const row = newRun({ taskId: s.taskId, stepId: s.stepIds[0]! });
+  const stubborn = spawn(process.execPath, ['-e', STUBBORN, 'run', row.id], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  started.push(stubborn);
+  await lines(stubborn, 1);
+  store.setSessionState(row.id, 'running', 'test', { pid: stubborn.pid!, pgid: stubborn.pid! });
+  const r = await launcher.stopRun(store, row.id, 'stopped by the owner', { graceMs: 800 });
+  await settle();
+  assert.deepEqual([r.signalled, r.killed], [true, true]);
+  assert.equal(stubborn.signalCode, 'SIGKILL');
+
+  // The leader exits on SIGTERM, its child (no run id in its command line) ignores it: the group the SIGTERM went to
+  // is still there, and its number cannot have been handed out again while it has members, so SIGKILL reaches it.
+  const t = seedTask(store, home, { name: 'stop-child' });
+  const row2 = newRun({ taskId: t.taskId, stepId: t.stepIds[0]! });
+  const code = [
+    `const c = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(STUBBORN)}], { stdio: ["ignore", "inherit", "ignore"] });`,
+    'console.log(c.pid); process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000)',
+  ].join(' ');
+  const leader = spawn(process.execPath, ['-e', code, 'run', row2.id], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  started.push(leader);
+  const out = await lines(leader, 2);
+  const childPid = Number(out.find((l) => l !== 'ready'));
+  assert.ok(Number.isInteger(childPid) && childPid > 0, out.join(','));
+  store.setSessionState(row2.id, 'running', 'test', { pid: leader.pid!, pgid: leader.pid! });
+  const r2 = await launcher.stopRun(store, row2.id, 'stopped by the owner', { graceMs: 800 });
+  assert.deepEqual([r2.signalled, r2.killed], [true, true]);
+  await waitFor('the stubborn child to go', () => !launcher.isAlive(childPid) || undefined);
+});

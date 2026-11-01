@@ -17,7 +17,7 @@ export {
   type QuietHours,
 } from './config.js';
 export { healthBody, startHealthServer, type HealthBody, type HealthServer } from './health.js';
-export { acquireBotLock, botLockFile, lockHolderAlive, readBotLock, type BotLock, type LockContent } from './lock.js';
+export { acquireBotLock, botLockFile, checkLockHolder, lockHolderAlive, readBotLock, type BotLock, type LockContent, type LockHolderCheck } from './lock.js';
 export { botLogFile, cleanLine, lastLogLines, openBotLog, REPEAT_LOG_MS, trimLog, type BotLog } from './log.js';
 export { ensureMemory } from './memory.js';
 export { runBot, STOP_DEADLINE_MS, tickOnce, type BotRunResult, type BotStarted, type RunBotOptions, type TickOnceOptions } from './run.js';
