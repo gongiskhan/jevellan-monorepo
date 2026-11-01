@@ -16,6 +16,7 @@
     "packages/core",
     "packages/memory",
     "packages/scheduler",
+    "packages/mcp",
     "packages/ui",
     "packages/cli"
   ],
