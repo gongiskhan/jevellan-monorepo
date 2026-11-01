@@ -154,3 +154,20 @@ Checked with `sw_vers`, `uname -m`, `df -h /`, `--version` of each tool, `lsof -
   the instruction into a fuller sentence and added tags); `jv memory search "npm ci"` finds it; the next task's start
   event carries "What this project remembers:" with that line and the memory id. No key file value in the store, its
   WAL or the logs.
+
+## 2026-11-01 The coordinator conversation with a real coordinator
+
+Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high, Claude Code 2.1.316 in tmux):
+`jv coordinator start` then, 25 s later, `jv coordinator message --project jv-mono-sandbox "status"`.
+
+- The pane shows the typed line as `❯  [owner]  status` (the prefix kept as typed). The transcript's own user entry
+  for it was matched to the messages row: `coordinatorTranscript` lists the owner line once.
+- The coordinator ran `jv status --json --project jv-mono-sandbox` (one `tool` entry, shown as "ran ... jv status
+  --json ...") and its reply was recorded 9.6 s after the owner line, with `responseMs` 9597 on the reply and on the
+  turn.
+- A coordinator says nothing before its first message: on start it waits for the owner (the skill has no greeting).
+- The coordinator skill predates the bot: reading the `bot` key of `jv status --json` it called the bot "Jev's
+  scheduler" and said new tasks "probably won't start until it's running", which is not so (`jv task create` starts
+  a task itself when a slot is free). The skill bodies are the skills run's (brief section 11); the README's bot
+  section says what the bot does, and a skills change that names the bot in the coordinator's status guidance is a
+  request recorded here.
