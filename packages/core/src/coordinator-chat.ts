@@ -52,8 +52,9 @@
 // coordinatorTranscript(store, project, options?)
 // - The conversation of one coordinator session (default: the current one, else the newest) as entries ordered by
 //   time, then by seq: owner lines, jv lines (wake lines, the handoff), coordinator text, and tool calls with their
-//   result joined in (one entry each, `text` a one-line summary such as "ran jv status --json"). A turn starts at an
-//   owner or jv line; its end is the time of its last coordinator text before the next line, and responseMs runs
+//   result joined in (one entry each, `text` a one-line summary such as "ran jv status --json"; the coordinator runs
+//   jv by the installed shim's path, which its prompt names, and the summary shows that path as `jv`, so the line
+//   says what was run rather than where jv lives). A turn starts at an owner or jv line; its end is the time of its last coordinator text before the next line, and responseMs runs
 //   from the line to that end (the entry that ends a turn carries both). The last turn is open: the coordinator may
 //   still be working. Reads the store only, unless `refresh` tails first.
 
@@ -619,8 +620,18 @@ function cut(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, max - 3).join('')}...`;
 }
 
-/** One line for a tool call: "ran <command>" for Bash, else "<tool> <main argument>". */
-export function toolSummary(name: string, input: string): string {
+/** `command` with every word that is exactly the path `jv` (the installed shim) written as `jv`. */
+function shortenJv(command: string, jv: string): string {
+  if (jv === '' || !command.includes(jv)) return command;
+  const escaped = jv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return command.replace(new RegExp(`(^|[\\s;&|(\`'"])${escaped}(?=$|[\\s;&|)\`'"])`, 'g'), '$1jv');
+}
+
+/**
+ * One line for a tool call: "ran <command>" for Bash, else "<tool> <main argument>". The coordinator runs jv by the
+ * path its prompt gives (`jv`, default the installed shim), which the line shows as `jv`.
+ */
+export function toolSummary(name: string, input: string, jv: string = paths.shim): string {
   let arg = input;
   try {
     const v = JSON.parse(input) as unknown;
@@ -634,7 +645,7 @@ export function toolSummary(name: string, input: string): string {
   }
   const lines = arg.trim().split('\n');
   const first = `${lines[0]!.trim()}${lines.length > 1 ? ' ...' : ''}`;
-  return cut(name === 'Bash' ? `ran ${first}` : `${name} ${first}`.trim(), TOOL_SUMMARY_MAX);
+  return cut(name === 'Bash' ? `ran ${shortenJv(first, jv)}` : `${name} ${first}`.trim(), TOOL_SUMMARY_MAX);
 }
 
 function payloadOf(row: EventRow): Record<string, unknown> {
