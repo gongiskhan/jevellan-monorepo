@@ -60,7 +60,7 @@ async function main() {
       const r = jvJson(['task', 'create', '--project', SANDBOX_NAME, '--kind', 'single', '--duty', 'answer', '--title', 'One line about invoices', '--text', 'In one sentence: what is an invoice total?'], { home, timeoutMs: 180_000 });
       taskId = r.json?.task?.id;
       const end = taskId ? await waitForTask(home, taskId, ['done', 'failed', 'stopped', 'waiting-owner'], { timeoutMs: 10 * 60_000 }) : undefined;
-      sessionId = taskId ? queryOne(storeFile(home), 'SELECT id FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1', taskId)?.id : undefined;
+      sessionId = taskId ? queryOne(storeFile(home), 'SELECT id FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT 1', taskId)?.id : undefined;
       return { ok: end?.state === 'done' && !!sessionId, detail: `${taskId} ${end?.state}; session ${sessionId}` };
     });
 
@@ -72,32 +72,35 @@ async function main() {
     const { pw } = loadPlaywright();
     mkdirSync(SHOTS_DIR, { recursive: true });
     mkdirSync(OWNER_SHOTS_DIR, { recursive: true });
+    // Each page with what it must show: a page that renders "not found" or an empty shell fails.
     const pages = [
-      ['login', '/login'],
-      ['project', `/p/${SANDBOX_NAME}`],
-      ['task', `/t/${taskId}`],
-      ['session', `/s/${sessionId}`],
+      ['login', '/login', (page) => page.getByRole('button', { name: 'Sign in' })],
+      ['project', `/p/${SANDBOX_NAME}`, (page) => page.getByRole('heading', { name: SANDBOX_NAME })],
+      ['task', `/t/${taskId}`, (page) => page.getByText(String(taskId)).first()],
+      ['session', `/s/${sessionId}`, (page) => page.getByText(String(sessionId)).first()],
     ];
     for (const scheme of ['light', 'dark']) {
       const browser = await pw.chromium.launch({ headless: true });
       try {
         const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: scheme, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
         const page = await context.newPage();
-        for (const [name, path] of pages) {
-          await check(`${name} page at 390 by 844, ${scheme}: renders, no horizontal scroll`, async () => {
+        for (const [name, path, shows] of pages) {
+          await check(`${name} page at 390 by 844, ${scheme}: renders its content, no horizontal scroll`, async () => {
             if (name !== 'login' && !page.url().includes('/p/') && !page.url().includes('/t/') && !page.url().includes('/s/')) {
               await page.goto(`${ui.url}/login`);
               await page.locator('input[type="password"]').fill(ui.password);
               await page.getByRole('button', { name: 'Sign in' }).click();
               await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 20_000 });
             }
+            if ((name === 'task' && !taskId) || (name === 'session' && !sessionId)) return { ok: false, detail: `no ${name} to show (the task check failed)` };
             await page.goto(`${ui.url}${path}`);
+            await shows(page).waitFor({ timeout: 20_000 });
             await page.waitForLoadState('networkidle');
             const scroll = await hasHorizontalScroll(page);
             const file = join(SHOTS_DIR, `m15-${name}-390x844-${scheme}.png`);
             await page.screenshot({ path: file, fullPage: true });
             copyFileSync(file, join(OWNER_SHOTS_DIR, `m15-${name}-390x844-${scheme}.png`));
-            return { ok: !scroll, detail: `${scroll ? 'scrolls sideways' : 'no horizontal scroll'}; ${file}` };
+            return { ok: !scroll, detail: `shows its content; ${scroll ? 'scrolls sideways' : 'no horizontal scroll'}; ${file}` };
           });
         }
       } finally {

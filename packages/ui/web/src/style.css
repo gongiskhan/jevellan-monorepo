@@ -198,6 +198,10 @@ pre {
   white-space: pre;
 }
 pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+/* On a phone a code block wraps instead of hiding its right side behind a sideways scroll. */
+@media (max-width: 760px) {
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--edge); vertical-align: top; }
 th { font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }

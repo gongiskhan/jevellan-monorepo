@@ -670,3 +670,14 @@ The root `package.json` has `overrides: {dompurify: "3.4.17"}` and the lock name
 package, no new dependency. The web checks (A2UI surfaces included) pass unchanged. The page's CSP (no inline scripts)
 already blocked the event-handler payloads; the override closes the rest. The nested zod 3 advisory has no fixed zod 3
 and is the owner's choice (status file, NEEDS-OWNER).
+
+## M-071 M14 runs with a temporary owner home
+
+M14 runs `jv bot install-service` with a temporary owner home and JV_HOME (`--owner-home`), not into the owner's
+real `~/Library/LaunchAgents`. macOS loads every plist in `~/Library/LaunchAgents` at the next login, and the bot's
+plist has `RunAtLoad` and `KeepAlive`, so writing the real file would start the bot at the owner's next login without
+his action, which section 8 reserves to him ("never loaded by the run; the owner runs the printed command"). The
+temporary file is the same file the real run writes (the same program, Node binary, checkout `bin.js`, PATH rule and
+keys; only HOME and JV_HOME differ), `plutil -lint` checks it, and `launchctl list` shows no `dev.jevellan.bot`.
+`node acceptance/m14-service-file.mjs --real` writes the real file for an owner who wants it; the README gives the
+two commands.

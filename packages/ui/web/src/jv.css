@@ -19,7 +19,7 @@
 .heading-actions { margin: 0; }
 .section-heading { margin-bottom: 4px; }
 .intro { margin-bottom: 16px; }
-.empty-page { max-width: 560px; margin: 8vh auto 0; text-align: center; }
+.empty-page { max-width: 560px; margin: 8vh auto 0; text-align: center; text-wrap: balance; }
 .mono { font-family: var(--font-mono); }
 .error-text { color: var(--danger); font-size: 12.5px; }
 .auth-error { margin: 2px 0 6px; }

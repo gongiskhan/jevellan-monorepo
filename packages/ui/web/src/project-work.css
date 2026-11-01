@@ -184,7 +184,7 @@
 .pw-context > button { flex: none; margin-left: auto; }
 /* Chat: owner messages right-aligned, replies as Markdown, muted one-liners and event cards. */
 .pw-timeline { flex: none; }
-.pw-chat-empty { max-width: 460px; margin: auto; padding: 40px 16px; color: var(--ink-3); font-size: 14px; line-height: 1.6; text-align: center; }
+.pw-chat-empty { max-width: 460px; margin: auto; padding: 40px 16px; color: var(--ink-3); font-size: 14px; line-height: 1.6; text-align: center; text-wrap: balance; }
 .pw-owner .markdown { font-size: 13.5px; }
 .pw-pending { margin: 4px 0 0; font-size: 11px; color: var(--ink-3); }
 .user-message.pw-owner > .pw-pending { margin: 4px 0 0; color: var(--ink-3); font-size: 11px; text-align: right; }
