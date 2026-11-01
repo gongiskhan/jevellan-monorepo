@@ -1,0 +1,80 @@
+{
+  "project": {
+    "name": "shop",
+    "guidance": ""
+  },
+  "task": {
+    "id": "TX7ZNQX",
+    "kind": "single",
+    "title": "Customers empty state",
+    "text": "The customers page shows a blank table when there are no customers. Find where it renders and say what an empty state would need.",
+    "parent": null,
+    "visible": false
+  },
+  "step": {
+    "ordinal": 1,
+    "duty": "investigate",
+    "instructions": "Name the files and lines.",
+    "attempt": 1,
+    "previous": []
+  },
+  "duty": {
+    "needs": [
+      "repo-read"
+    ],
+    "runtimes": [
+      "claude-sdk",
+      "claude-tmux",
+      "codex"
+    ]
+  },
+  "menu": {
+    "models": [
+      {
+        "id": "claude-opus-5-5",
+        "label": "Opus",
+        "provider": "claude-main",
+        "runtime": "claude-sdk",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "description": "Strong default for planning, implementation, reviews and all UI work (the owner wants UI on Opus at high or extra high, never on Fable)."
+      },
+      {
+        "id": "claude-haiku-5-5",
+        "label": "Haiku",
+        "provider": "claude-main",
+        "runtime": "claude-sdk",
+        "efforts": [
+          "low",
+          "medium"
+        ],
+        "description": "Short answers and conversation turns."
+      }
+    ],
+    "providers": [
+      {
+        "name": "claude-main",
+        "weeklyPct": null,
+        "fiveHourPct": null,
+        "ceilingPct": 90,
+        "observedAt": null
+      },
+      {
+        "name": "claude-second",
+        "weeklyPct": null,
+        "fiveHourPct": null,
+        "ceilingPct": 90,
+        "observedAt": null
+      }
+    ]
+  },
+  "history": {
+    "recent": []
+  },
+  "rules": "The owner builds TypeScript and JavaScript web apps and agent platforms.\nEffort follows difficulty, not importance: most implementation, planning and verification are high; routine work is medium; quick answers are low; extra high or max for the hardest design, debugging and UI work, or after a step failed at a lower effort.\nUI, visual work and anything judged by looking goes to Opus at high or extra high. Not Fable: the owner finds it too fast and careless on interfaces.\nLong, well-specified implementation prefers GPT through Codex, especially when Claude quota is tight.\nPrefer staying on the model the previous step used when it fits: consecutive steps on the same model reuse its prompt cache.\nSmall, clear changes need no plan. Plan when the work spans several parts of the system, changes stored data, or the request is ambiguous.\nTests catch problems better than reviews. Review only when the owner's workflow has a review step.\nSonnet almost never. Haiku and the cheap endpoint models for answers and conversation.\nA provider above 80% of its weekly ceiling is a last resort; above the ceiling it is not in the menu."
+}

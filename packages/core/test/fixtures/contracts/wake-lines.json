@@ -1,0 +1,8 @@
+[
+  "[jv] TX7ZNQX (Customers empty state) step investigate: needs-decision. Run: jv report RJ79PMG",
+  "[jv] TSJ13Y1 (Import customers from CSV) step plan: not placed (Jev: no key configured). Run: jv task show TSJ13Y1",
+  "[jv] TSJ13Y1 (Import customers from CSV): landing could not run (no worktree). Run: jv task show TSJ13Y1",
+  "[jv] TMJPV8D (README how-to-run) landing: ask-owner, Touches a risky area (src/billing). Options: Land now (jv land TMJPV8D --force) or Leave it (jv task stop TMJPV8D --discard). Run: jv task show TMJPV8D",
+  "[jv] 3 updates. Run: jv status --json",
+  "[jv] TMJPV8D (README how-to-run) landing: checks failed: TZ=UTC npm test exited 1: AssertionError: expected the customers table to render 3 rows, got 0. AssertionError: expected the customers table to render 3 rows, got 0. AssertionError: expected the customers table to render 3 rows, got 0. AssertionError: expected the customers table to render 3 rows, got 0. AssertionError: expected the customers table to render 3 rows, got 0. AssertionError: expected the customers table to render 3 rows, g..."
+]

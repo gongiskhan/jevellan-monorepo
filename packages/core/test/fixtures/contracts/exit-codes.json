@@ -1,0 +1,9 @@
+{
+  "exit": { "ok": 0, "failure": 1, "refused": 2, "notFound": 3, "conflict": 4 },
+  "errors": [
+    { "error": "no providers file at /home/owner/.jv/providers.json; run jv update to write it from the template", "exitCode": 2 },
+    { "error": "no task TZZZZZZ", "exitCode": 3 },
+    { "error": "request id b-feature-import-csv names an existing task with a different title", "exitCode": 4 },
+    { "error": "database disk image is malformed", "exitCode": 1 }
+  ]
+}

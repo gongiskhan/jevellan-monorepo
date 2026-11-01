@@ -1,0 +1,181 @@
+{
+  "id": "TX7ZNQX",
+  "project": "shop",
+  "kind": "single",
+  "title": "Customers empty state",
+  "text": "The customers page shows a blank table when there are no customers. Find where it renders and say what an empty state would need.",
+  "state": "waiting-owner",
+  "stateReason": "step 1 investigate: needs-decision",
+  "currentStep": 0,
+  "branch": null,
+  "worktree": null,
+  "baseCommit": null,
+  "landedCommit": null,
+  "visible": false,
+  "parent": null,
+  "after": null,
+  "children": [],
+  "workflow": {
+    "name": "single",
+    "source": "single"
+  },
+  "createdAt": "2026-11-01T18:16:00.015Z",
+  "startedAt": "2026-11-01T18:16:00.045Z",
+  "endedAt": null,
+  "steps": [
+    {
+      "id": "SQ88TS3",
+      "ordinal": 1,
+      "duty": "investigate",
+      "when": "always",
+      "state": "running",
+      "stateReason": "placed: Opus high via claude-main",
+      "attempts": 1,
+      "onFail": null,
+      "instructions": "Name the files and lines.",
+      "runs": [
+        {
+          "id": "RJ79PMG",
+          "runtime": "claude-sdk",
+          "provider": "claude-main",
+          "model": "claude-opus-5-5",
+          "effort": "high",
+          "state": "done",
+          "stateReason": "turn ended: needs-decision",
+          "nativeSessionId": "0b6f2c1e-4a7d-4e9b-9c3f-5d8e2a1b7c40",
+          "tmuxTarget": null,
+          "startedAt": "2026-11-01T18:16:00.045Z",
+          "endedAt": "2026-11-01T18:16:00.050Z",
+          "lastEventAt": "2026-11-01T18:16:00.050Z",
+          "tokens": {
+            "input": 18234,
+            "output": 912,
+            "cacheRead": 120400,
+            "cacheWrite": 6100
+          },
+          "costUsd": 0.4123,
+          "report": {
+            "id": "EJP6MBP",
+            "sessionId": "RJ79PMG",
+            "taskId": "TX7ZNQX",
+            "stepId": "SQ88TS3",
+            "status": "needs-decision",
+            "summary": "The customers table renders in src/pages/customers.tsx (line 14) and has no branch for an empty list. An empty state needs a message and a link to add a customer; the copy is yours to choose.",
+            "question": "Which empty state should the customers page show?",
+            "options": [
+              {
+                "label": "Short message",
+                "description": "One line and an Add customer button."
+              },
+              {
+                "label": "Guided start",
+                "description": "A short checklist with import and add options."
+              }
+            ],
+            "changedFiles": [],
+            "screenshots": [],
+            "limitations": "Read-only investigation; nothing was run.",
+            "createdAt": "2026-11-01T18:16:00.050Z"
+          }
+        }
+      ],
+      "placements": [
+        {
+          "id": "DPQ5R7T",
+          "chosen": {
+            "source": "jev",
+            "duty": "investigate",
+            "visible": false,
+            "runtime": "claude-sdk",
+            "provider": "claude-main",
+            "model": "claude-opus-5-5",
+            "label": "Opus",
+            "effort": "high",
+            "effortRequested": "high",
+            "effortAfterRules": "high",
+            "choices": {
+              "model": {
+                "source": "jev",
+                "option": "Opus via claude-main (claude-sdk)",
+                "probabilities": {
+                  "Opus via claude-main (claude-sdk)": 0.72,
+                  "Haiku via claude-main (claude-sdk)": 0.28
+                }
+              },
+              "effort": {
+                "source": "jev",
+                "option": "high",
+                "probabilities": {
+                  "low": 0.07,
+                  "medium": 0.07,
+                  "high": 0.72,
+                  "xhigh": 0.07,
+                  "max": 0.07
+                }
+              },
+              "provider": {
+                "source": "jev",
+                "option": "claude-main",
+                "probabilities": {
+                  "claude-main": 0.72,
+                  "claude-second": 0.28
+                }
+              }
+            },
+            "candidates": [
+              {
+                "name": "claude-main",
+                "kind": "claude-subscription",
+                "eligible": true,
+                "reason": "eligible",
+                "ceilingPct": 90,
+                "weeklyPct": null,
+                "fiveHourPct": null
+              },
+              {
+                "name": "claude-second",
+                "kind": "claude-subscription",
+                "eligible": true,
+                "reason": "eligible",
+                "ceilingPct": 90,
+                "weeklyPct": null,
+                "fiveHourPct": null
+              },
+              {
+                "name": "ollama",
+                "kind": "openai-compatible",
+                "eligible": false,
+                "reason": "unsupported",
+                "ceilingPct": 90,
+                "weeklyPct": null,
+                "fiveHourPct": null
+              }
+            ],
+            "rules": {
+              "applied": [],
+              "ignored": [],
+              "minimum": "low",
+              "maximum": "max",
+              "reason": ""
+            }
+          },
+          "override": null,
+          "overrideMode": null,
+          "outcome": null,
+          "createdAt": "2026-11-01T18:16:00.044Z"
+        }
+      ]
+    }
+  ],
+  "messages": [
+    {
+      "id": "M2V52B8",
+      "direction": "owner",
+      "text": "Keep it to one line, please.",
+      "createdAt": "2026-11-01T18:16:00.050Z",
+      "deliveredAt": null,
+      "session": null
+    }
+  ],
+  "landings": []
+}
