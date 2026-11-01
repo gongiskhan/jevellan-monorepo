@@ -142,3 +142,15 @@ Checked with `sw_vers`, `uname -m`, `df -h /`, `--version` of each tool, `lsof -
   `zod@^3.25.76`, `@a2ui/web_core` depends on it.
 - The MCP SDK 1.32.2 declares `zod` `^3.25 || ^4.0` as a peer and its `registerTool` takes zod 4 object schemas
   (`AnySchema` in `server/zod-compat`); phase 3 verifies it with a client.
+
+## 2026-11-01 Phase 2: memory
+
+- `node:sqlite` of Node 22.22.0 creates an external-content FTS5 table with `tokenize='unicode61 remove_diacritics 2'`;
+  "automação" and "automacao" match each other both ways (packages/memory tests). `DatabaseSync.isTransaction`
+  exists in 22.22.0, which lets jevellan-memory use a savepoint inside a caller's transaction.
+- M10 part one (`node acceptance/m10-memory.mjs --part one`, 28 s, real providers in a temporary home): Jev placed the
+  investigate step on `claude-opus-5-5` medium (claude-sdk); the worker called `mcp__jv__jv_remember` once and the
+  memory was stored with kind environment, scope `project:jv-mono-sandbox`, source `session:<R>` (the worker reworded
+  the instruction into a fuller sentence and added tags); `jv memory search "npm ci"` finds it; the next task's start
+  event carries "What this project remembers:" with that line and the memory id. No key file value in the store, its
+  WAL or the logs.
