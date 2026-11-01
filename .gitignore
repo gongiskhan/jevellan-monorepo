@@ -9,3 +9,4 @@ dist-test/
 test-results/
 playwright-report/
 acceptance/baseline/run-start.marker
+acceptance/results/
