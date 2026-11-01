@@ -1,0 +1,61 @@
+{
+  "jev": {
+    "keyFile": "~/.jv/secrets/jev.key",
+    "model": "jev-latest",
+    "timeoutMs": 4000
+  },
+  "providers": [
+    {
+      "name": "claude-main",
+      "kind": "claude-subscription",
+      "home": "~/.jv/homes/claude-main",
+      "tokenFile": "~/.jv/secrets/claude-main.token",
+      "ceilingPct": 90,
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "label": "Opus",
+          "efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "id": "claude-haiku-5-5",
+          "label": "Haiku",
+          "efforts": [
+            "low",
+            "medium"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "claude-second",
+      "kind": "claude-subscription",
+      "home": "~/.jv/homes/claude-second",
+      "tokenFile": "~/.jv/secrets/claude-second.token",
+      "models": "same as claude-main"
+    },
+    {
+      "name": "ollama",
+      "kind": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "enabled": false,
+      "metered": false,
+      "models": [
+        {
+          "id": "qwen-local",
+          "label": "Qwen",
+          "efforts": [
+            "low"
+          ],
+          "maxTokens": 8192
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "task": {
+    "given": [
+      "b-feature-import-csv",
+      "acceptance-phase4-feature-x1"
+    ],
+    "auto": [
+      "auto:7a4cdff9715f47c432af8bb9a99987df4b2f4a5b9ed8c5d1217e9d535c8aa4de"
+    ],
+    "coordinatorConversation": [
+      "coordinator-conversation:PK6NREG"
+    ],
+    "schedule": [
+      "schedule:C3M8K2Q:2026-11-03T03:00:00.000Z"
+    ],
+    "plan": [
+      "plan:J7Q2W9X:0",
+      "plan:J7Q2W9X:2"
+    ]
+  },
+  "session": {
+    "run": [
+      "run:DPQ5R7T"
+    ],
+    "continue": [
+      "continue:RJ79PMG"
+    ],
+    "messages": [
+      "messages:RJ79PMG"
+    ],
+    "message": [
+      "message:M4V8C2D"
+    ],
+    "answer": [
+      "answer:M4V8C2D"
+    ],
+    "resume": [
+      "resume:RJ79PMG"
+    ],
+    "coordinator": [
+      "coordinator:PK6NREG:5c2e7f10-8a3b-4d6e-9f12-3b4c5d6e7f80"
+    ]
+  },
+  "invalid": [
+    "",
+    " padded ",
+    "trailing "
+  ]
+}

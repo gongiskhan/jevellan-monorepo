@@ -1,0 +1,61 @@
+{
+  "status": "needs-decision",
+  "summary": "Both empty states for the customers page are built behind the `customersEmptyState` setting: a one-line message with an Add customer button, and a guided start with import and add. Open http://localhost:3006/customers with no customers to see the current one. Which one should ship?",
+  "question": "Which empty state should the customers page ship with?",
+  "options": [
+    { "label": "Short message", "description": "One line and an Add customer button." },
+    { "label": "Guided start", "description": "A short checklist with import and add options." },
+    { "label": "Import first", "description": "The CSV import as the main action." }
+  ],
+  "testsRun": { "command": "TZ=UTC npm test", "passed": true, "summary": "44 passing, including the two new empty state tests." },
+  "changedFiles": ["src/pages/customers.tsx", "src/pages/customers-empty.tsx", "test/customers-empty.test.tsx"],
+  "screenshots": [
+    { "path": ".jv-evidence/customers-empty-short.png", "caption": "Short message, 1280 by 800, light" },
+    { "path": ".jv-evidence/customers-empty-guided.png", "caption": "Guided start, 1280 by 800, light" }
+  ],
+  "limitations": "The import option links to the existing import page; it does not preview the file.",
+  "ownerCommands": [
+    { "command": "npm start", "cwd": "worktree", "why": "To try both states in the browser." }
+  ],
+  "ui": [
+    {
+      "version": "v0.9",
+      "createSurface": {
+        "surfaceId": "empty-state-choice",
+        "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
+      }
+    },
+    {
+      "version": "v0.9",
+      "updateComponents": {
+        "surfaceId": "empty-state-choice",
+        "components": [
+          { "id": "root", "component": "Column", "children": ["title", "picker", "send"] },
+          { "id": "title", "component": "Text", "text": "Pick the empty state for the customers page", "variant": "h3" },
+          {
+            "id": "picker",
+            "component": "ChoicePicker",
+            "variant": "mutuallyExclusive",
+            "options": [
+              { "label": "Short message", "value": "Short message" },
+              { "label": "Guided start", "value": "Guided start" },
+              { "label": "Import first", "value": "Import first" }
+            ],
+            "value": { "path": "/choice" }
+          },
+          { "id": "send-label", "component": "Text", "text": "Send" },
+          {
+            "id": "send",
+            "component": "Button",
+            "child": "send-label",
+            "action": { "event": { "name": "answer", "context": { "label": { "path": "/choice/0" } } } }
+          }
+        ]
+      }
+    },
+    {
+      "version": "v0.9",
+      "updateDataModel": { "surfaceId": "empty-state-choice", "path": "/choice", "value": ["Short message"] }
+    }
+  ]
+}
