@@ -84,6 +84,8 @@ export interface TaskRow {
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
+  /** Schema 2: who created the task ('owner', 'coordinator', 'ui', 'mcp', 'schedule:<C>', 'planner:<J>', 'improver:<J>'). */
+  origin: string;
 }
 
 export interface StepRow {
@@ -153,6 +155,8 @@ export interface ReportRow {
   limitations: string | null;
   owner_commands_json: string | null;
   created_at: string;
+  /** Schema 2: the A2UI messages the worker attached (JSON array), or null. */
+  ui_json: string | null;
 }
 
 export interface DecisionRow {
@@ -198,6 +202,8 @@ export interface MessageRow {
   text: string;
   created_at: string;
   delivered_at: string | null;
+  /** Schema 2: the raw A2UI action of an owner message born in the UI (JSON), or null. */
+  meta_json: string | null;
 }
 
 export interface ProviderUsageRow {
@@ -235,3 +241,63 @@ export interface Tables {
 }
 
 export type TableName = keyof Tables;
+
+// ---- schema 2 (brief section 3) ------------------------------------------------------------------------------
+
+export const SCHEDULE_KINDS = ['task', 'job'] as const;
+export type ScheduleKind = (typeof SCHEDULE_KINDS)[number];
+
+export interface ScheduleRow {
+  id: string;
+  project_id: string;
+  name: string;
+  cron: string;
+  tz: string;
+  kind: ScheduleKind;
+  spec_json: string;
+  enabled: number;
+  last_run_at: string | null;
+  next_run_at: string;
+  last_result: string;
+  created_at: string;
+}
+
+export const GOAL_STATES = ['open', 'paused', 'done'] as const;
+export type GoalState = (typeof GOAL_STATES)[number];
+
+export interface GoalRow {
+  id: string;
+  project_id: string;
+  title: string;
+  text: string;
+  priority: number;
+  state: GoalState;
+  created_at: string;
+  updated_at: string;
+}
+
+export const JOB_KINDS = ['plan', 'improve-memory', 'improve-docs', 'improve-skills'] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
+export const JOB_STATES = ['queued', 'running', 'done', 'failed'] as const;
+export type JobState = (typeof JOB_STATES)[number];
+
+export interface JobRow {
+  id: string;
+  project_id: string;
+  kind: JobKind;
+  request_id: string;
+  task_id: string | null;
+  state: JobState;
+  state_reason: string;
+  input_json: string;
+  result_json: string | null;
+  created_at: string;
+  ended_at: string | null;
+}
+
+export interface UiTokenRow {
+  token_hash: string;
+  created_at: string;
+  last_seen_at: string;
+  user_agent: string;
+}

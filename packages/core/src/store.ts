@@ -1,6 +1,11 @@
 // The store: one SQLite file (node:sqlite), the only state and the only history of jv.
 //
-// - The schema below is section 4 of the brief, verbatim. Schema version lives in meta.schema_version.
+// - Schema 1 below is section 4 of the skills brief, verbatim (SCHEMA_SQL, byte for byte the lifted runtime's).
+//   Schema 2 (SCHEMA_V2_SQL, the monorepo brief's section 3) only adds columns and tables. A version 1 store is
+//   copied once to <file>.v1.bak (VACUUM INTO, so the WAL is included) and migrated in one transaction. Schema
+//   version lives in meta.schema_version; a store newer than this jv is refused. Packages that keep their own
+//   tables in the store (jevellan-memory) register a schema extension, applied with the migration and checked on
+//   every open (M-011).
 // - Pragmas: WAL, busy_timeout 5000, synchronous NORMAL, foreign_keys ON, set on every connection.
 // - Several jv processes write concurrently, each in short transactions: tx() runs BEGIN IMMEDIATE (the write
 //   lock is taken up front, so a transaction never fails half way on a lock upgrade) and retries a bounded number
@@ -11,7 +16,7 @@
 // - Every state setter writes state_reason (landings: reason) and the timestamps the state implies.
 // - Nothing in this module deletes a row, and nothing else may: there is no delete helper.
 
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { conflict, JvError, notFound, refused } from './errors.js';
@@ -58,7 +63,10 @@ import {
   type UsageSource,
 } from './types.js';
 
-export const SCHEMA_VERSION = '1';
+export const SCHEMA_VERSION = '2';
+
+/** The schema version of SCHEMA_SQL alone (the skills repository's jv). */
+export const SCHEMA_V1_VERSION = '1';
 
 /** Section 4 of the brief, verbatim. */
 export const SCHEMA_SQL = `CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, path TEXT NOT NULL, default_branch TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -174,6 +182,81 @@ CREATE TABLE provider_usage (
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- schema_version, coordinator tmux targets, etc.`;
 
+/**
+ * Schema 2, the monorepo brief's section 3: columns and tables only (SQLite cannot change a CHECK, so no existing
+ * CHECK is touched). The schema_version update is the migration's own last statement.
+ */
+export const SCHEMA_V2_SQL = `ALTER TABLE tasks    ADD COLUMN origin TEXT NOT NULL DEFAULT 'owner';
+ALTER TABLE reports  ADD COLUMN ui_json TEXT;
+ALTER TABLE messages ADD COLUMN meta_json TEXT;
+
+CREATE TABLE schedules (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL, cron TEXT NOT NULL, tz TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('task','job')),
+  spec_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT, next_run_at TEXT NOT NULL, last_result TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, UNIQUE (project_id, name)
+);
+
+CREATE TABLE goals (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  title TEXT NOT NULL CHECK (length(title) <= 120),
+  text TEXT NOT NULL CHECK (length(text) <= 8000),
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+  state TEXT NOT NULL CHECK (state IN ('open','paused','done')),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+
+CREATE TABLE jobs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  kind TEXT NOT NULL CHECK (kind IN ('plan','improve-memory','improve-docs','improve-skills')),
+  request_id TEXT UNIQUE NOT NULL,
+  task_id TEXT REFERENCES tasks(id),
+  state TEXT NOT NULL CHECK (state IN ('queued','running','done','failed')),
+  state_reason TEXT NOT NULL DEFAULT '',
+  input_json TEXT NOT NULL, result_json TEXT,
+  created_at TEXT NOT NULL, ended_at TEXT
+);
+
+CREATE TABLE ui_tokens (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, user_agent TEXT NOT NULL DEFAULT '');`;
+
+/** The tables schema 2 adds, in creation order. */
+export const TABLES_V2 = ['schedules', 'goals', 'jobs', 'ui_tokens'] as const;
+
+/**
+ * Tables another package keeps in the store (jevellan-memory's memories and memories_fts). jevellan-core depends on
+ * no package of the repository, so the package registers this at process start (the jv CLI does) and the store
+ * applies it: inside the 1-to-2 migration, when a new store is created, and on any open where `present` is false.
+ */
+export interface SchemaExtension {
+  name: string;
+  /** Whether the extension's tables exist (a read; called on every open). */
+  present(db: DatabaseSync): boolean;
+  /** Creates them; idempotent; runs inside the store's write transaction. */
+  ensure(db: DatabaseSync): void;
+}
+
+const schemaExtensions = new Map<string, SchemaExtension>();
+
+/** Registers (or replaces, by name) a schema extension for every store this process opens from now on. */
+export function registerSchemaExtension(extension: SchemaExtension): void {
+  schemaExtensions.set(extension.name, extension);
+}
+
+/** The registered schema extensions, by name. */
+export function listSchemaExtensions(): SchemaExtension[] {
+  return [...schemaExtensions.values()];
+}
+
+/** The request id prefix of the per-project task that holds coordinator conversation messages (M-012). */
+export const COORDINATOR_TASK_REQUEST_PREFIX = 'coordinator-conversation:';
+export const COORDINATOR_TASK_TITLE = 'Coordinator conversation';
+
 /** The tables of SCHEMA_SQL, in creation order. */
 export const TABLES = [
   'projects',
@@ -247,6 +330,16 @@ function checkOneOf<T extends string>(what: string, value: string, allowed: read
   return value as T;
 }
 
+/** Task origins of schema 2 (brief section 3). */
+export const TASK_ORIGIN_PATTERN = /^(owner|coordinator|ui|mcp|schedule:C[0-9A-Z]{6}|planner:J[0-9A-Z]{6}|improver:J[0-9A-Z]{6})$/;
+
+function checkOrigin(origin: string): string {
+  if (!TASK_ORIGIN_PATTERN.test(origin)) {
+    throw refused(`task origin ${JSON.stringify(origin)} is not one of owner, coordinator, ui, mcp, schedule:<C>, planner:<J>, improver:<J>`);
+  }
+  return origin;
+}
+
 function checkReason(reason: string): string {
   const r = reason.trim();
   if (r === '') throw refused('a state change needs a reason');
@@ -270,6 +363,11 @@ export interface OpenStoreOptions {
   file?: string;
   /** Id generator, for tests of the collision retry. Default: newId. */
   idSource?: (kind: IdKind) => string;
+  /**
+   * Tests only: create a new store at schema 1 (SCHEMA_SQL alone) and open an existing version 1 store without
+   * migrating it, as the skills repository's jv does.
+   */
+  schemaVersion?: '1';
 }
 
 // ---- inputs ------------------------------------------------------------------------------------------------
@@ -293,6 +391,8 @@ export interface NewTask {
   /** Initial state, default queued. Not an input column for the request_id rule. */
   state?: TaskState;
   state_reason?: string;
+  /** Who created the task (schema 2), default 'owner'. Not an input column for the request_id rule. */
+  origin?: string;
 }
 
 export interface NewStep {
@@ -338,6 +438,8 @@ export interface NewReport {
   screenshots_json?: string;
   limitations?: string | null;
   owner_commands_json?: string | null;
+  /** Schema 2: the A2UI messages the worker attached, as a JSON array. */
+  ui_json?: string | null;
 }
 
 export interface NewDecision {
@@ -376,6 +478,8 @@ export interface NewMessage {
   session_id?: string | null;
   direction: MessageDirection;
   text: string;
+  /** Schema 2: the raw A2UI action of an owner message born in the UI, as JSON. */
+  meta_json?: string | null;
 }
 
 export interface NewProviderUsage {
@@ -428,6 +532,9 @@ export interface TaskFilter {
   parent_task_id?: string;
   kind?: TaskKind;
   states?: readonly TaskState[];
+  origin?: string;
+  /** Include the per-project coordinator conversation tasks (M-012); they are left out by default. */
+  include_coordinator_tasks?: boolean;
 }
 export interface SessionFilter {
   project_id?: string;
@@ -527,9 +634,12 @@ export class Store {
   private depth = 0;
   private closed = false;
 
-  private constructor(file: string, idSource: (kind: IdKind) => string) {
+  private readonly createVersion: '1' | undefined;
+
+  private constructor(file: string, idSource: (kind: IdKind) => string, createVersion?: '1') {
     this.file = file;
     this.idSource = idSource;
+    this.createVersion = createVersion;
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA busy_timeout = 5000');
@@ -540,7 +650,7 @@ export class Store {
 
   /** Opens (creating and migrating when needed) the store file. */
   static open(options: OpenStoreOptions = {}): Store {
-    const store = new Store(options.file ?? paths.store, options.idSource ?? newId);
+    const store = new Store(options.file ?? paths.store, options.idSource ?? newId, options.schemaVersion);
     try {
       store.migrate();
     } catch (error) {
@@ -693,45 +803,99 @@ export class Store {
   // ---- schema -----------------------------------------------------------------------------------------------
 
   /**
-   * Checks the schema version, creating the schema in a new file. An existing store is only read (no write lock), so
-   * opening the store for a read never queues behind a writer; BEGIN IMMEDIATE is taken only when the meta table is
-   * missing, and the check is repeated inside that transaction in case another process created the schema first.
+   * Checks the schema version, creating the schema in a new file and migrating a version 1 store to version 2. An
+   * up-to-date store is only read (no write lock), so opening the store for a read never queues behind a writer;
+   * BEGIN IMMEDIATE is taken only to create or migrate, and the check is repeated inside that transaction in case
+   * another process did it first.
    */
   private migrate(): void {
-    const checkVersion = (): void => {
-      const version = this.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
-      if (version === SCHEMA_VERSION) return;
-      if (version === undefined) throw refused(`${this.file} has no schema_version in meta`);
-      throw refused(
-        `store schema version ${version} does not match this runtime (${SCHEMA_VERSION}); run jv update`,
-      );
-    };
+    const target = this.createVersion ?? SCHEMA_VERSION;
+    const readVersion = (): string | undefined =>
+      this.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
     const metaExists = () =>
       this.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'") !== undefined;
+    const refuseOther = (version: string | undefined): never => {
+      if (version === undefined) throw refused(`${this.file} has no schema_version in meta`);
+      if (/^\d+$/.test(version) && Number(version) > Number(SCHEMA_VERSION)) {
+        throw refused(`store schema ${version} is newer than this jv (${SCHEMA_VERSION}); update jv`);
+      }
+      throw refused(`store schema version ${version} does not match this runtime (${SCHEMA_VERSION}); run jv update`);
+    };
+
     if (this.retryBusy(metaExists)) {
-      this.retryBusy(checkVersion);
-      return;
-    }
-    this.tx(() => {
-      const hasMeta = metaExists();
-      if (!hasMeta) {
-        const tables = this.all<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-        );
-        if (tables.length > 0) {
-          throw refused(`${this.file} has tables but no schema version; it is not a jv store`);
-        }
-        this.db.exec(SCHEMA_SQL);
-        this.run('INSERT INTO meta (key, value) VALUES (?, ?)', 'schema_version', SCHEMA_VERSION);
+      const version = this.retryBusy(readVersion);
+      if (version === target) {
+        if (target === SCHEMA_VERSION) this.ensureExtensions();
         return;
       }
-      checkVersion();
+      if (version === SCHEMA_V1_VERSION && target === SCHEMA_VERSION) {
+        this.migrateV1ToV2();
+        return;
+      }
+      refuseOther(version);
+    }
+    this.tx(() => {
+      if (metaExists()) {
+        const version = readVersion();
+        if (version === target) return;
+        if (version === SCHEMA_V1_VERSION && target === SCHEMA_VERSION) return; // migrated below, outside this tx
+        refuseOther(version);
+      }
+      const tables = this.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+      if (tables.length > 0) throw refused(`${this.file} has tables but no schema version; it is not a jv store`);
+      this.db.exec(SCHEMA_SQL);
+      if (target === SCHEMA_VERSION) {
+        this.db.exec(SCHEMA_V2_SQL);
+        for (const ext of schemaExtensions.values()) ext.ensure(this.db);
+      }
+      this.run('INSERT INTO meta (key, value) VALUES (?, ?)', 'schema_version', target);
     });
+    if (target === SCHEMA_VERSION && this.retryBusy(readVersion) === SCHEMA_V1_VERSION) this.migrateV1ToV2();
+  }
+
+  /**
+   * Version 1 to 2: copy the file once to <file>.v1.bak (VACUUM INTO writes a consistent copy that includes the
+   * WAL), then in one transaction add the schema 2 columns and tables, the registered extensions, one coordinator
+   * conversation task per project (M-012) and the new version.
+   */
+  private migrateV1ToV2(): void {
+    const backup = `${this.file}.v1.bak`;
+    if (this.file !== ':memory:' && !existsSync(backup)) {
+      this.retryBusy(() => this.db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`));
+      chmodSync(backup, 0o600);
+    }
+    this.tx(() => {
+      const version = this.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
+      if (version === SCHEMA_VERSION) return;
+      if (version !== SCHEMA_V1_VERSION) throw refused(`store schema version ${String(version)} cannot be migrated to ${SCHEMA_VERSION}`);
+      this.db.exec(SCHEMA_V2_SQL);
+      for (const ext of schemaExtensions.values()) ext.ensure(this.db);
+      for (const project of this.listProjects()) this.coordinatorTask(project.id);
+      this.run("UPDATE meta SET value = ? WHERE key = 'schema_version'", SCHEMA_VERSION);
+    });
+  }
+
+  /** Applies a registered extension whose tables are missing (one registered after the store was created). */
+  private ensureExtensions(): void {
+    for (const ext of schemaExtensions.values()) {
+      if (this.retryBusy(() => ext.present(this.db))) continue;
+      this.tx(() => {
+        if (!ext.present(this.db)) ext.ensure(this.db);
+      });
+    }
   }
 
   /** meta.schema_version of this store. */
   schemaVersion(): string {
     return this.getMeta('schema_version') ?? '';
+  }
+
+  private v2: boolean | undefined;
+
+  /** Whether this store is at schema 2 (read once: a store opened at a version keeps it for this connection). */
+  private isV2(): boolean {
+    if (this.v2 === undefined) this.v2 = this.schemaVersion() === SCHEMA_VERSION;
+    return this.v2;
   }
 
   // ---- meta -------------------------------------------------------------------------------------------------
@@ -786,6 +950,7 @@ export class Store {
         default_branch: input.default_branch,
         created_at: nowIso(),
       });
+      if (this.isV2()) this.coordinatorTask(id);
       return { row: this.getProject(id)!, created: true };
     });
   }
@@ -850,8 +1015,42 @@ export class Store {
         created_at: at,
         started_at: times.started_at,
         ended_at: times.ended_at,
+        ...(this.isV2() ? { origin: checkOrigin(input.origin ?? 'owner') } : {}),
       });
       return { row: this.getTask(id)!, created: true };
+    });
+  }
+
+  /**
+   * The project's coordinator conversation task (M-012): `messages.task_id` is NOT NULL, so the owner's lines to
+   * the coordinator are stored on this task (kind single, no steps, state done, origin coordinator). One per
+   * project, keyed by its request id, created by the migration and by createProject, and on demand here.
+   */
+  coordinatorTask(projectId: string): TaskRow {
+    return this.tx(() => {
+      const requestId = `${COORDINATOR_TASK_REQUEST_PREFIX}${projectId}`;
+      const existing = this.getTaskByRequestId(requestId);
+      if (existing) return existing;
+      if (!this.getProject(projectId)) throw notFound(`no project ${projectId}`);
+      const at = nowIso();
+      const id = this.insertWithId('task', 'tasks', {
+        project_id: projectId,
+        parent_task_id: null,
+        after_task_id: null,
+        request_id: requestId,
+        kind: 'single',
+        title: COORDINATOR_TASK_TITLE,
+        task_text: 'Holds the owner\'s messages to the project coordinator. No steps; never runs, lands or shows as work.',
+        workflow_json: JSON.stringify({ name: 'coordinator-conversation', steps: [] }),
+        visible: 0,
+        state: 'done',
+        state_reason: 'coordinator conversation',
+        created_at: at,
+        started_at: null,
+        ended_at: at,
+        origin: 'coordinator',
+      });
+      return this.getTask(id)!;
     });
   }
 
@@ -875,6 +1074,8 @@ export class Store {
       ['parent_task_id = ?', filter.parent_task_id],
       ['kind = ?', filter.kind],
       ['state', filter.states],
+      ['origin = ?', filter.origin],
+      ['request_id NOT LIKE ?', filter.include_coordinator_tasks ? undefined : `${COORDINATOR_TASK_REQUEST_PREFIX}%`],
     ]);
     return this.all<TaskRow>(`SELECT * FROM tasks${w.sql} ORDER BY created_at, id`, ...w.params);
   }
@@ -1172,6 +1373,7 @@ export class Store {
       'screenshots_json',
       'limitations',
       'owner_commands_json',
+      ...(this.isV2() ? ['ui_json'] : []),
     ];
     const values: Record<string, Param> = {
       step_id: input.step_id ?? null,
@@ -1185,6 +1387,7 @@ export class Store {
       screenshots_json: input.screenshots_json ?? '[]',
       limitations: input.limitations ?? null,
       owner_commands_json: input.owner_commands_json ?? null,
+      ...(this.isV2() ? { ui_json: input.ui_json ?? null } : {}),
     };
     return this.tx(() => {
       const existing = this.getReportBySession(input.session_id);
@@ -1368,6 +1571,7 @@ export class Store {
         text: input.text,
         created_at: nowIso(),
         delivered_at: null,
+        ...(this.isV2() ? { meta_json: input.meta_json ?? null } : {}),
       });
       return this.getMessage(id)!;
     });

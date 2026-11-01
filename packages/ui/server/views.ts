@@ -293,7 +293,8 @@ export function overview(db: ReadOnlyStore, opts: ViewOptions = {}): Overview {
   const projects = db.all<ProjectRow>('SELECT * FROM projects ORDER BY name');
   const out: OverviewProject[] = [];
   for (const p of projects) {
-    const all = db.all<TaskRow>('SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at, id', p.id);
+    // The project's coordinator conversation task holds messages only (M-012) and is never shown as work.
+    const all = db.all<TaskRow>("SELECT * FROM tasks WHERE project_id = ? AND request_id NOT LIKE 'coordinator-conversation:%' ORDER BY created_at, id", p.id);
     const shown = all.filter((t) => {
       const g = TASK_GROUPS.find((x) => x.state === t.state);
       if (!g) return false;

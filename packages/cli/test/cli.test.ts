@@ -96,12 +96,12 @@ test('jv --version prints the package and schema versions', () => {
   assert.equal(r.code, 0, r.stderr);
   const v = JSON.parse(r.stdout) as { version: string; schemaVersion: string; storeSchemaVersion: string | null };
   assert.equal(v.version, '0.1.0');
-  assert.equal(v.schemaVersion, '1');
+  assert.equal(v.schemaVersion, '2');
   assert.equal(v.storeSchemaVersion, null);
   const t = jv('--version');
   assert.equal(t.code, 0);
   // The monorepo's line (brief section 2): no skills are installed in this test home.
-  assert.match(t.stdout, /^jevellan 0\.1\.0 \(store schema 1, skills not installed\)$/m);
+  assert.match(t.stdout, /^jevellan 0\.1\.0 \(store schema 2, skills not installed\)$/m);
 });
 
 test('help lists the commands', () => {
@@ -116,5 +116,5 @@ test('jv --version reads the schema version of an existing store', async () => {
   Store.open({ file: join(home, 'store.sqlite') }).close();
   const r = jv('--version', '--json');
   assert.equal(r.code, 0, r.stderr);
-  assert.equal((JSON.parse(r.stdout) as { storeSchemaVersion: string | null }).storeSchemaVersion, '1');
+  assert.equal((JSON.parse(r.stdout) as { storeSchemaVersion: string | null }).storeSchemaVersion, '2');
 });

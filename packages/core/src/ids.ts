@@ -15,13 +15,17 @@ export const ID_PREFIXES = {
   message: 'M',
   project: 'P',
   report: 'E',
+  // schema 2 (brief section 3)
+  schedule: 'C',
+  goal: 'G',
+  job: 'J',
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
 export type IdPrefix = (typeof ID_PREFIXES)[IdKind];
 
 const ID_BODY_LENGTH = 6;
-const ID_PATTERN = /^[TSRDLMPE][0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$/;
+const ID_PATTERN = /^[TSRDLMPECGJ][0-9ABCDEFGHJKMNPQRSTVWXYZ]{6}$/;
 
 /** A new random id for `kind`, for example newId('task') -> "T7K2M9Q". */
 export function newId(kind: IdKind): string {

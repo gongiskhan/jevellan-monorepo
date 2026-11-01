@@ -101,8 +101,9 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
 };
 
 describe('schema', () => {
-  test('tables and columns are exactly section 4', () => {
-    const store = freshStore();
+  test('tables and columns are exactly section 4 at schema 1', () => {
+    counter++;
+    const store = Store.open({ file: join(home, `store-${counter}.sqlite`), schemaVersion: '1' });
     try {
       const tables = (
         store.db
@@ -126,7 +127,7 @@ describe('schema', () => {
     const store = freshStore();
     try {
       assert.equal(store.schemaVersion(), SCHEMA_VERSION);
-      assert.equal(SCHEMA_VERSION, '1');
+      assert.equal(SCHEMA_VERSION, '2');
       const pragma = (name: string) => Object.values(store.db.prepare(`PRAGMA ${name}`).get() as object)[0];
       assert.equal(pragma('journal_mode'), 'wal');
       assert.equal(pragma('busy_timeout'), 5000);
@@ -145,7 +146,7 @@ describe('schema', () => {
     const b = Store.open({ file });
     try {
       assert.equal(b.listProjects().length, 1);
-      assert.equal(b.schemaVersion(), '1');
+      assert.equal(b.schemaVersion(), '2');
     } finally {
       b.close();
     }
@@ -191,7 +192,8 @@ describe('ids', () => {
   });
 
   test('an id collision is retried with a fresh id', () => {
-    const ids = ['PAAAAAA', 'TAAAAAA', 'TAAAAAA', 'TBBBBBB'];
+    // PAAAAAA the project, TCONV01 its coordinator conversation task (schema 2), then the collision.
+    const ids = ['PAAAAAA', 'TCONV01', 'TAAAAAA', 'TAAAAAA', 'TBBBBBB'];
     const store = freshStore({ idSource: () => ids.shift() ?? 'TZZZZZZ' });
     try {
       const project = store.createProject({ name: 'collide', path: '/tmp/c', default_branch: 'main' }).row;
@@ -339,7 +341,7 @@ describe('request ids', () => {
       const t0 = Date.now();
       const reader = Store.open({ file });
       try {
-        assert.equal(reader.schemaVersion(), '1');
+        assert.equal(reader.schemaVersion(), '2');
         assert.deepEqual(reader.listProjects(), []);
       } finally {
         reader.close();
@@ -587,7 +589,8 @@ describe('concurrent writers', () => {
     const check = Store.open({ file });
     try {
       const n = (sql: string, ...p: string[]) => (check.db.prepare(sql).get(...p) as { n: number }).n;
-      assert.equal(n('SELECT count(*) AS n FROM tasks'), workers * count + 1);
+      // + 1 seeded task, + 1 the project's coordinator conversation task (schema 2).
+      assert.equal(n('SELECT count(*) AS n FROM tasks'), workers * count + 2);
       assert.equal(n('SELECT count(*) AS n FROM sessions'), workers * count + 1);
       assert.equal(n('SELECT count(*) AS n FROM events'), workers * count * 2);
       for (let w = 0; w < workers; w++) {
