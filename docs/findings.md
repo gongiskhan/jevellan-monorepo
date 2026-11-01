@@ -351,3 +351,16 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   M17's exclusions of the member's hub/, locks/ and cleanup/ (recorded in M-036). Known and left: landing check tails are cut before
   masking (same class as M-083, lower likelihood), event rows written before M-083 are not rewritten (the MCP and UI
   mask on the way out), and `jv bot start` in a terminal ignores SIGHUP's default (its lock is now harmless).
+- 2026-11-01 Final verification before v0.1.0: `npx tsc -b` and `npx eslint .` clean; the root `npm test` passes 930
+  tests (core 479, memory 13, scheduler 17, planner 9, improver 8, bot 45, mcp 28, ui server 62, ui web checks 106,
+  cli 138, scripts 25); `node scripts/secret-scan.mjs --untracked --values-from ~/.jv/secrets` passes; the history
+  scan finds only the `sk-ant-` regex literal of an early contracts test (blobs 42245d890920 and 28d83789338c, no key
+  value, built from parts since); `scripts/bump-version.mjs --check 0.1.0` passes; no tracked CLAUDE.md or .claude/;
+  no commit carries an attribution trailer. Acceptance, `node acceptance/run-all.mjs --real` (M7 and M6 rerun with
+  `--only` after their journey fixes): M1 11/11, M2 30/30, M3 11/11, M4 5/5, M5 7/7, M6 11/11, M7 13/13, M8 23/23,
+  M9 12/12, M10 12/12, M11 9/9, M12 10/10, M13 6/6, M14 7/7 (temporary owner home, M-071), M15 10/10, M16 2/2, M17
+  3/3 (member pids 79678 and 821 unchanged; 12 files written by the member daemons themselves, none by jv). The
+  record run's M7 failed once on the pane count (the coordinator's screen holds about 50 rows and a long reply scrolled
+  the first owner line off); the check now reads Claude Code's own transcript as well. On the real ~/.jv at the end:
+  `jv gc` nothing to archive, `jv bot stop` "bot not running", `jv status` shows no task. The checkout is 936 MB with
+  node_modules, the sandbox 97 MB, the clone under 1 MB, no worktree left.
