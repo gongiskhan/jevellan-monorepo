@@ -11,6 +11,18 @@
   "references": [
     {
       "path": "../core"
+    },
+    {
+      "path": "../memory"
+    },
+    {
+      "path": "../scheduler"
+    },
+    {
+      "path": "../planner"
+    },
+    {
+      "path": "../improver"
     }
   ]
 }

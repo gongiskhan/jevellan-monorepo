@@ -3,21 +3,14 @@
 
 import type { CommandIo, ParsedArgs } from '../command.js';
 import { flagString } from '../command.js';
-import { loadProviders } from 'jevellan-core/providers';
 import { openStore } from 'jevellan-core/store';
-import { formatUsageWeek, parseWeek, usageForWeek } from 'jevellan-core/usage';
+import { formatUsageWeek, parseWeek, usageReport } from 'jevellan-core/usage';
 
 export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
   const week = parseWeek(flagString(args, 'week') ?? args.positionals[0]);
-  let names: string[] = [];
-  try {
-    names = loadProviders().providers.map((p) => p.name);
-  } catch {
-    // no providers.json: show what the store has
-  }
   const store = openStore();
   try {
-    const u = usageForWeek(store, week, names);
+    const u = usageReport(store, week);
     io.result(u, () => formatUsageWeek(u));
     return 0;
   } finally {

@@ -63,6 +63,11 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
     module: './commands/memory.js',
     usage: 'jv memory add|search|list|archive|export  (add: --scope global|project [--project N] --kind K [--tag t]... "text")',
   },
+  mcp: {
+    module: './commands/mcp.js',
+    booleans: ['stdio', 'http', 'token-reset'],
+    usage: 'jv mcp [--stdio] [--http [--port 7072] [--bind 127.0.0.1]] [--token-reset]',
+  },
   version: { module: './commands/version.js', usage: 'jv --version', internal: true },
 
   bootstrap: { module: './commands/bootstrap.js', usage: 'jv bootstrap [--skills PATH] [--node PATH]', internal: true },

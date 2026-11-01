@@ -18,6 +18,9 @@
 // one of createSurface, updateComponents, updateDataModel, deleteSurface, at most 65536 characters serialised. It is
 // checked apart from the rest (contracts/a2ui.ts checkReportUi): invalid `ui` is dropped with "ui dropped: <reason>"
 // appended to limitations and the report is still recorded (reports.ui_json, schema 2).
+//
+// sessionReport() is what `jv report S --json` prints; the control MCP's jv_report_get and its jv://sessions/<id>/report
+// resource return the same object (brief section 5).
 
 import { z } from 'zod';
 import { checkReportUi } from './contracts/a2ui.js';
@@ -283,6 +286,17 @@ export function reportView(row: ReportRow): ReportView {
     ...(row.ui_json ? { ui: parseJson<unknown[]>(row.ui_json, []) } : {}),
     createdAt: row.created_at,
   };
+}
+
+/**
+ * The report of a session, as `jv report S --json` prints it and the jv_report_get tool returns it: exit 3 for an
+ * unknown session and for a session without a report (the reason names its state).
+ */
+export function sessionReport(store: Store, sessionId: string): ReportView {
+  const session = store.requireSession(sessionId);
+  const row = store.getReportBySession(session.id);
+  if (!row) throw notFound(`session ${session.id} has no report (state ${session.state}: ${session.state_reason})`);
+  return reportView(row);
 }
 
 /** The report as text for humans (jv report S). */

@@ -39,6 +39,9 @@
 // Landings of one project run one at a time (meta landing_lock:<project id>, a lock whose holder pid is gone is taken
 // over); the fast-forward retries the merge and the checks when the default branch moved in between (at most three
 // rounds), so two tasks finishing together both land.
+//
+// landView() and landExitCode() are what `jv land --json` prints and exits with; the control MCP's jv_land returns the
+// same object (brief section 5).
 
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -1059,6 +1062,21 @@ export async function landTask(store: Store, taskId: string, options: LandOption
     if (decided.route === 'verify-then-land') return verifyThenLand(ctx, row);
     return guarded(ctx, row, () => land(ctx, row));
   });
+}
+
+// ---- views -----------------------------------------------------------------------------------------------------
+
+/** What `jv land --json` prints and the jv_land tool returns: the result plus its landings row, when it has one. */
+export type LandView = LandResult & { landing?: LandingRow };
+
+export function landView(store: Store, result: LandResult): LandView {
+  const landing = result.landingId ? store.getLanding(result.landingId) : undefined;
+  return { ...result, ...(landing ? { landing } : {}) };
+}
+
+/** The exit code of `jv land`: 2 when the landing was refused or failed, else 0. */
+export function landExitCode(result: LandResult): number {
+  return result.state === 'failed' || result.state === 'refused' ? 2 : 0;
 }
 
 // ---- text ------------------------------------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import { refused } from 'jevellan-core/errors';
 import { openStore, type Store } from 'jevellan-core/store';
 import {
   answerTask,
+  createdTaskView,
   createTask,
   formatTaskList,
   formatTaskView,
@@ -102,18 +103,7 @@ async function create(store: Store, args: ParsedArgs, io: CommandIo): Promise<nu
     ...(requestId !== undefined ? { requestId } : {}),
     ...(origin !== undefined ? { origin } : {}),
   });
-  io.result(
-    {
-      task: result.task,
-      steps: result.steps,
-      created: result.created,
-      workflow: result.workflow,
-      ...(result.questions ? { questions: result.questions } : {}),
-      ...(result.start ? { start: result.start } : {}),
-      warnings: result.warnings,
-    },
-    () => formatCreated(result),
-  );
+  io.result(createdTaskView(result), () => formatCreated(result));
   return 0;
 }
 

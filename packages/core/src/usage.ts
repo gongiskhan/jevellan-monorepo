@@ -6,8 +6,12 @@
 //   tokens and costs in the week, recorded as a provider_usage row with source `local` (local_week, local_*). A
 //   subscription never gets a local row: placement reads the newest row per provider, and a row without percentages
 //   would hide the last probe.
+// - usageReport() is what `jv usage --json` prints and the control MCP's jv_usage returns (brief section 5): the week
+//   of `--week` (default the current one) for every provider of providers.json plus any provider the store has rows
+//   for (a missing or invalid providers.json leaves only the latter).
 
 import { refused } from './errors.js';
+import { loadProviders } from './providers.js';
 import type { Store } from './store.js';
 import type { ProviderUsageRow, SessionRow } from './types.js';
 
@@ -137,6 +141,18 @@ export function usageForWeek(store: Store, week: string, providerNames: readonly
 
 function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? 'unknown' : `${v}%`;
+}
+
+/** `jv usage [--week W]` as JSON: W is an ISO week or a date in it, default the current week. */
+export function usageReport(store: Store, week?: string, now: Date = new Date()): UsageWeek {
+  const resolved = parseWeek(week, now);
+  let names: string[] = [];
+  try {
+    names = loadProviders().providers.map((p) => p.name);
+  } catch {
+    // no providers.json: show what the store has
+  }
+  return usageForWeek(store, resolved, names);
 }
 
 /** The text of `jv usage`. */
