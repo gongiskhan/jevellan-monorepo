@@ -41,9 +41,9 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
   status: { module: './commands/status.js', booleans: ['watch'], usage: 'jv status [--project N] [--watch]' },
   task: {
     module: './commands/task.js',
-    booleans: ['visible', 'discard', 'undo', 'keep'],
+    booleans: ['visible', 'discard', 'undo', 'keep', 'stat'],
     usage:
-      'jv task create|show|message|answer|stop|resume|override ...  (create: --project N --kind K [--duty D] --title T (--text ... | --file F) [--parent T] [--after T] [--visible])',
+      'jv task create|show|list|changes|message|answer|stop|resume|override ...  (create: --project N --kind K [--duty D] --title T (--text ... | --file F) [--parent T] [--after T] [--visible]; list: [--project N] [--state S] [--limit N]; changes: T [--stat])',
   },
   land: { module: './commands/land.js', booleans: ['force'], usage: 'jv land T [--force]' },
   report: { module: './commands/report.js', usage: 'jv report S' },

@@ -22,6 +22,9 @@ const { main } = await import('../src/cli.js');
 type TaskDeps = import('jevellan-core/tasks').TaskDeps;
 type PlaceStepInput = import('jevellan-core/route').PlaceStepInput;
 
+// Runs of these tests stay queued (the spawn is a recording fake), so every task would keep its slot: the limits
+// are made wide here; the slot rule of jv task create has its own test with tight ones (deps.limits).
+writeFileSync(join(home, 'bot.json'), JSON.stringify({ limits: { perProject: 1000, total: 1000 } }));
 writeSkill(home, 'verify', ['repo-write', 'shell', 'browser'], 'Verify.');
 writeSkill(home, 'document', ['repo-write'], 'Document.');
 writeSkill(home, 'answer', [], 'Answer.');

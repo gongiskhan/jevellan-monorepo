@@ -1,9 +1,13 @@
-// jv task create|show|message|answer|stop|resume|override (section 3). Argument parsing and output only; the work is
-// in src/tasks.ts.
+// jv task create|show|list|changes|message|answer|stop|resume|override (section 3, brief section 4). Argument parsing
+// and output only; the work is in jevellan-core's tasks.ts and changes.ts.
 //
 //   jv task create --project N --kind feature|bug|automation|single [--duty D] --title T (--text "..." | --file F)
 //                  [--parent T] [--after T] [--visible] [--request-id ID]
+//                  (internal, not in --help: --origin owner|coordinator|ui|mcp|schedule:<C>|planner:<J>|improver:<J>,
+//                  set by the UI, the MCP, the scheduler, the planner and the improver)
 //   jv task show T
+//   jv task list [--project N] [--state S] [--limit N]     newest first, with origin; local HH:MM times
+//   jv task changes T [--stat]                             branch against base plus uncommitted worktree changes
 //   jv task message T "text"
 //   jv task answer T "<option label or text>"
 //   jv task stop T [--discard]
@@ -12,13 +16,16 @@
 
 import { readFileSync } from 'node:fs';
 import type { CommandIo, ParsedArgs } from '../command.js';
-import { flagBool, flagString, requireFlag, requirePositional } from '../command.js';
+import { flagBool, flagInt, flagString, requireFlag, requirePositional } from '../command.js';
+import { formatChanges, formatChangesStat, taskChanges } from 'jevellan-core/changes';
 import { refused } from 'jevellan-core/errors';
 import { openStore, type Store } from 'jevellan-core/store';
 import {
   answerTask,
   createTask,
+  formatTaskList,
   formatTaskView,
+  listTaskSummaries,
   messageTask,
   overrideTask,
   requireTaskId,
@@ -28,7 +35,7 @@ import {
   type CreateTaskResult,
 } from 'jevellan-core/tasks';
 
-const SUBCOMMANDS = ['create', 'show', 'message', 'answer', 'stop', 'resume', 'override'] as const;
+const SUBCOMMANDS = ['create', 'show', 'list', 'changes', 'message', 'answer', 'stop', 'resume', 'override'] as const;
 
 function rest(args: ParsedArgs, from: number, what: string): string {
   const text = args.positionals.slice(from).join(' ').trim();
@@ -52,6 +59,19 @@ function formatCreated(r: CreateTaskResult): string {
   return lines.join('\n');
 }
 
+function list(store: Store, args: ParsedArgs, io: CommandIo): number {
+  const project = flagString(args, 'project');
+  const state = flagString(args, 'state');
+  const limit = flagInt(args, 'limit');
+  const tasks = listTaskSummaries(store, {
+    ...(project !== undefined ? { project } : {}),
+    ...(state !== undefined ? { state } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+  });
+  io.result({ tasks }, () => formatTaskList(tasks, { showProject: project === undefined }));
+  return 0;
+}
+
 async function create(store: Store, args: ParsedArgs, io: CommandIo): Promise<number> {
   const textFlag = flagString(args, 'text');
   const file = flagString(args, 'file');
@@ -69,6 +89,7 @@ async function create(store: Store, args: ParsedArgs, io: CommandIo): Promise<nu
   const after = flagString(args, 'after');
   const duty = flagString(args, 'duty');
   const requestId = flagString(args, 'request-id');
+  const origin = flagString(args, 'origin');
   const result = await createTask(store, {
     project: requireFlag(args, 'project'),
     kind: requireFlag(args, 'kind'),
@@ -79,6 +100,7 @@ async function create(store: Store, args: ParsedArgs, io: CommandIo): Promise<nu
     ...(parent !== undefined ? { parent } : {}),
     ...(after !== undefined ? { after } : {}),
     ...(requestId !== undefined ? { requestId } : {}),
+    ...(origin !== undefined ? { origin } : {}),
   });
   io.result(
     {
@@ -103,8 +125,15 @@ export async function run(args: ParsedArgs, io: CommandIo): Promise<number> {
   const store = openStore();
   try {
     if (sub === 'create') return await create(store, args, io);
+    if (sub === 'list') return list(store, args, io);
     const id = requirePositional(args, 1, `the task id (jv task ${sub} T)`);
     switch (sub) {
+      case 'changes': {
+        const stat = flagBool(args, 'stat');
+        const changes = await taskChanges(store, id, { stat });
+        io.result(changes, () => (stat ? formatChangesStat(changes) : formatChanges(changes)));
+        return 0;
+      }
       case 'show': {
         const view = taskView(store, requireTaskId(store, id));
         io.result(view, () => formatTaskView(view));

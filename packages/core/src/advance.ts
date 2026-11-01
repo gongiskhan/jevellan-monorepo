@@ -9,8 +9,8 @@
 // woken. A run that cannot be spawned fails the step and the task.
 //
 // afterRun(store, sessionId), called by `jv run` when a run ended:
-// - stopped and lost runs are left alone: whoever stopped a run owns the task's state, and a lost run continues only
-//   by `jv task resume` (jv status marks it lost at read time);
+// - stopped and lost runs are left alone: whoever stopped a run owns the task's state, and a lost run continues by
+//   `jv task resume` or by reconcile(), the bot's tick (jv status marks it lost at read time; see "Lost runs");
 // - a run that is no longer the step's newest run, or of a task that ended, changes nothing;
 // - messages for the task that are still undelivered are delivered at this turn boundary first (D-006): the same
 //   native session is resumed with them, as a new run row, before anything advances;
@@ -30,12 +30,30 @@
 // ends, passed or failed: landing lands it or puts the task in waiting-owner with the failure.
 // When a task becomes done, every queued task whose after_task_id is it starts (releaseDependents).
 //
+// Slots (brief sections 3 and 8, limits.ts): a step started for a task in state `queued` (jv task create, a
+// released --after dependent, jv task resume of a queued task, reconcile's admission) starts only while
+// slotRefusal() allows it, checked before the Jev call and again in the transaction that creates the run (two
+// admitters can both pass the first check; the queued run row is what holds the slot). Otherwise nothing is placed
+// and the task stays queued with the reason exactly "waiting for a slot". A task that already runs (the next step,
+// an on_fail retry, a continue, a message or an answer) and an owner placement (jv task override --undo) are never
+// held back.
+//
+// Admission refusals: a Jev refusal of a step start records meta `admit_attempt:<T>` = {at, reason}; a start
+// clears its reason. reconcile() retries a refused task at most once a minute and wakes the coordinator only when
+// the reason is new (once per refusal, not per retry).
+//
+// Lost runs (the change to D-040 recorded with reconcile): a lost run that had reported is advanced by its report
+// as afterRun would advance a finished one (advanceLostRun), and a run lost more than MAX_LOST_RESUMES times in a
+// row counts as a failure of its step (failRun: on_fail, else the task waits on the owner). tasks.recoverLostRun
+// decides which applies and otherwise resumes the conversation.
+//
 // Everything that needs no Jev call (the step's state, the outcome, the task's state) is written before the first
 // await, so a caller that does not wait still leaves the store consistent.
 
 import { conflict, isJvError, refused } from './errors.js';
 import { createRun, spawnRun } from './launcher.js';
 import { isLandingVerifyStep, landTask, type LandOptions, type LandResult } from './land.js';
+import { readLimits, slotRefusal, WAITING_FOR_A_SLOT, type Limits } from './limits.js';
 import { CONTINUE_PROMPT } from './prompt.js';
 import { reportView } from './report.js';
 import { LLM_DUTIES, placeStep, type Placement, type PlaceStepInput } from './route.js';
@@ -47,6 +65,9 @@ import { parseOnFail, stepVisible } from './workflows.js';
 /** Continue runs after progress reports, per placement of a step. */
 export const MAX_PROGRESS = 20;
 export const TOO_MANY_PROGRESS = 'too many progress reports';
+/** Lost runs of one step in a row that are resumed; one more counts as a failure of the step. */
+export const MAX_LOST_RESUMES = 3;
+export const ADMIT_ATTEMPT_META_PREFIX = 'admit_attempt:';
 
 const LIVE_RUN_STATES = ['queued', 'starting', 'running'] as const;
 const ENDED_TASK_STATES = ['done', 'failed', 'stopped'] as const;
@@ -59,6 +80,10 @@ export interface AdvanceDeps {
   land: (store: Store, taskId: string, options: LandOptions) => Promise<LandResult>;
   /** Closes the tmux windows of finished claude-tmux conversations (runtimes/claude-tmux closeFinishedWindows). */
   closeWindows: (store: Store, scope: { taskId: string; stepId?: string }) => Promise<string[]>;
+  /** The work limits a step started from `queued` must fit in (limits.readLimits: bot.json). */
+  limits: () => Limits;
+  /** Milliseconds since the epoch. */
+  now: () => number;
 }
 
 export function defaultAdvanceDeps(): AdvanceDeps {
@@ -73,6 +98,8 @@ export function defaultAdvanceDeps(): AdvanceDeps {
       const { closeFinishedWindows } = await import('./runtimes/claude-tmux.js');
       return closeFinishedWindows(store, scope);
     },
+    limits: () => readLimits(),
+    now: () => Date.now(),
   };
 }
 
@@ -148,6 +175,46 @@ export function recordOutcome(store: Store, step: StepRow, status: 'done' | 'fai
   return store.updateDecision(decision.id, { outcome_json: JSON.stringify(outcome) });
 }
 
+// ---- admission refusals -----------------------------------------------------------------------------------------
+
+/** meta admit_attempt:<T>: when the task's start was last refused, and why (reason null: the last start went through). */
+export interface AdmitAttempt {
+  at: string;
+  reason: string | null;
+}
+
+export function admitAttemptKey(taskId: string): string {
+  return `${ADMIT_ATTEMPT_META_PREFIX}${taskId}`;
+}
+
+export function readAdmitAttempt(store: Store, taskId: string): AdmitAttempt | undefined {
+  const raw = store.getMeta(admitAttemptKey(taskId));
+  if (raw === undefined) return undefined;
+  try {
+    const v = JSON.parse(raw) as Partial<AdmitAttempt>;
+    if (typeof v.at !== 'string') return undefined;
+    return { at: v.at, reason: typeof v.reason === 'string' ? v.reason : null };
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeAdmitAttempt(store: Store, taskId: string, attempt: AdmitAttempt): void {
+  store.setMeta(admitAttemptKey(taskId), JSON.stringify(attempt));
+}
+
+/** A start went through: a refusal recorded for the task is over (the next one is new and wakes the coordinator). */
+function clearAdmitRefusal(store: Store, taskId: string, at: number): void {
+  if (readAdmitAttempt(store, taskId)?.reason) writeAdmitAttempt(store, taskId, { at: new Date(at).toISOString(), reason: null });
+}
+
+/** The task stays queued with the reason exactly "waiting for a slot" (written only when it is not that already). */
+export function waitForSlot(store: Store, taskId: string): { state: 'waiting'; reason: string } {
+  const task = store.requireTask(taskId);
+  if (task.state !== 'queued' || task.state_reason !== WAITING_FOR_A_SLOT) store.setTaskState(task.id, 'queued', WAITING_FOR_A_SLOT);
+  return { state: 'waiting', reason: WAITING_FOR_A_SLOT };
+}
+
 // ---- starting a step --------------------------------------------------------------------------------------------
 
 export interface StartStepOptions {
@@ -173,7 +240,9 @@ export type StartStepResult =
 
 /**
  * Places and starts one step of a task (section 7.2 placement, 7.3 cwd). Refuses (exit 4) when the task already has
- * a live run, and (exit 2) when the task ended. Returns what happened; a Jev refusal is a result, not a throw.
+ * a live run, and (exit 2) when the task ended. Returns what happened; a Jev refusal is a result, not a throw. A task
+ * in state `queued` starts only when a slot is free (see the header); otherwise the result is `waiting` with the
+ * reason "waiting for a slot".
  */
 export async function startStep(store: Store, taskId: string, options: StartStepOptions): Promise<StartStepResult> {
   const deps = withDefaults(options.deps);
@@ -193,6 +262,9 @@ export async function startStep(store: Store, taskId: string, options: StartStep
   if (!step) return { state: 'none', reason: 'no step left to start' };
   if (step.task_id !== task.id) throw refused(`step ${step.id} belongs to task ${step.task_id}, not ${task.id}`);
   const attempt = options.attempt ?? Math.max(1, step.attempts);
+  // A queued task starts only in a free slot; the owner's own placement is never held back.
+  const limits = task.state === 'queued' && !options.owner ? deps.limits() : undefined;
+  if (limits && slotRefusal(store, task.project_id, task.id, limits)) return waitForSlot(store, task.id);
 
   let placement: Omit<Placement, 'decisionId'> & { decisionId: string };
   if (options.owner) {
@@ -217,6 +289,7 @@ export async function startStep(store: Store, taskId: string, options: StartStep
       const refusedStep = store.tx(() => {
         const s = store.setStepState(step.id, pendingState, reason);
         store.setTaskState(task.id, 'queued', `step ${step.ordinal} (${step.duty}) not placed: ${reason}`);
+        writeAdmitAttempt(store, task.id, { at: new Date(deps.now()).toISOString(), reason });
         return s;
       });
       task = store.requireTask(task.id);
@@ -229,7 +302,11 @@ export async function startStep(store: Store, taskId: string, options: StartStep
   const total = store.listSteps(task.id).length;
   const cwd = dutyCwd(store, task, step.duty);
   const where = `${placement.model} ${placement.effort} on ${placement.provider} (${placement.runtime})`;
-  const { session, startedStep } = store.tx(() => {
+  const started = store.tx(() => {
+    // Again inside the transaction: another process (or another await of this one) may have started the task, or
+    // taken the last slot, while Jev answered. The placement decision stays as it is, without a run.
+    if (liveRuns(store, task.id).length) throw conflict(`task ${task.id} was started by another process while its step was placed`);
+    if (limits && slotRefusal(store, task.project_id, task.id, limits)) return undefined;
     const run = createRun(store, {
       requestId: `run:${placement.decisionId}`,
       projectId: task.project_id,
@@ -249,8 +326,11 @@ export async function startStep(store: Store, taskId: string, options: StartStep
       attempts: Math.max(1, fresh.attempts),
     });
     store.setTaskState(task.id, 'running', `step ${step.ordinal} of ${total} (${step.duty}) on ${where}`, { current_step: step.ordinal });
+    clearAdmitRefusal(store, task.id, deps.now());
     return { session: run, startedStep: s };
   });
+  if (!started) return waitForSlot(store, task.id);
+  const { session, startedStep } = started;
   try {
     deps.spawn(store, session.id);
   } catch (error) {
@@ -376,8 +456,50 @@ function progressCount(store: Store, step: StepRow): number {
 /** What jv run calls when a run ended (section 7.6). See the header for every case. */
 export async function afterRun(store: Store, sessionId: string, deps?: Partial<AdvanceDeps>): Promise<void> {
   const d = withDefaults(deps);
-  await advanceAfterRun(store, sessionId, d);
-  // A step that finished, or a task that ended, keeps no claude-tmux window open (a later resume opens it again).
+  await advanceAfterRun(store, sessionId, d, false);
+  await closeAfter(store, sessionId, d);
+}
+
+/**
+ * A lost run that had reported (its process died after jv_report, before its end event): the report is the turn's
+ * outcome, so the task advances by it exactly as afterRun advances a finished run (done: the next step or landing;
+ * progress: Continue.; needs-decision or blocked: the owner; a verify report with failing tests: on_fail). A lost
+ * run without a report changes nothing here (tasks.recoverLostRun resumes it).
+ */
+export async function advanceLostRun(store: Store, sessionId: string, deps?: Partial<AdvanceDeps>): Promise<void> {
+  const d = withDefaults(deps);
+  const session = store.getSession(sessionId);
+  if (!session || session.state !== 'lost' || !store.getReportBySession(sessionId)) return;
+  await advanceAfterRun(store, sessionId, d, true);
+  await closeAfter(store, sessionId, d);
+}
+
+/** Trailing runs of a step that were lost, newest first, counted until the first run that was not. */
+export function lostStreak(store: Store, stepId: string): number {
+  let n = 0;
+  for (const r of store.listSessions({ step_id: stepId, kind: 'step' }).reverse()) {
+    if (r.state !== 'lost') break;
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Applies the step's failure rule to a run that counts as a failed one (a run lost more than MAX_LOST_RESUMES times
+ * in a row): on_fail goto up to maxLoops, else the task waits on the owner with `summary`.
+ */
+export async function failRun(store: Store, sessionId: string, summary: string, deps?: Partial<AdvanceDeps>): Promise<void> {
+  const d = withDefaults(deps);
+  const session = store.requireSession(sessionId);
+  if (!session.task_id || !session.step_id) return;
+  const task = store.requireTask(session.task_id);
+  if ((ENDED_TASK_STATES as readonly string[]).includes(task.state)) return;
+  await handleFailure(store, task, store.requireStep(session.step_id), session, summary, d);
+  await closeAfter(store, sessionId, d);
+}
+
+/** A step that finished, or a task that ended, keeps no claude-tmux window open (a later resume opens it again). */
+async function closeAfter(store: Store, sessionId: string, d: AdvanceDeps): Promise<void> {
   const session = store.getSession(sessionId);
   if (!session?.task_id || !session.step_id || session.kind !== 'step') return;
   const task = store.getTask(session.task_id);
@@ -392,10 +514,10 @@ export async function afterRun(store: Store, sessionId: string, deps?: Partial<A
   }
 }
 
-async function advanceAfterRun(store: Store, sessionId: string, d: AdvanceDeps): Promise<void> {
+async function advanceAfterRun(store: Store, sessionId: string, d: AdvanceDeps, lost: boolean): Promise<void> {
   const session = store.getSession(sessionId);
   if (!session || session.kind !== 'step' || !session.task_id || !session.step_id) return;
-  if (session.state !== 'done' && session.state !== 'failed') return;
+  if (session.state !== 'done' && session.state !== 'failed' && !(lost && session.state === 'lost')) return;
   const task = store.getTask(session.task_id);
   const step = store.getStep(session.step_id);
   if (!task || !step) return;
@@ -406,7 +528,7 @@ async function advanceAfterRun(store: Store, sessionId: string, d: AdvanceDeps):
 
   // Messages that arrived during the turn go to the same session before anything advances.
   const undelivered = store.listMessages({ task_id: task.id, undelivered: true });
-  if (undelivered.length && session.state === 'done' && session.native_session_id && report?.status !== 'progress') {
+  if (undelivered.length && session.state !== 'failed' && session.native_session_id && report?.status !== 'progress') {
     continueRun(store, session, {
       requestId: `messages:${session.id}`,
       reason: `delivering ${undelivered.length} message${undelivered.length === 1 ? '' : 's'} at the turn boundary`,

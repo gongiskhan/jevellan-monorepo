@@ -10,12 +10,13 @@
 //   pid and pgid. The child gets this process's environment without JV_SESSION (a coordinator's id must not leak into
 //   the run); the worker's own environment is built from scratch inside the run (env.ts).
 // - markLost flips starting/running rows whose process is gone and that have no `end` event to `lost` (jv status and
-//   jv tail call it at read time).
+//   jv tail call it at read time; reconcile every bot tick). Reconcile also passes `skip` (a task another process is
+//   starting) and `orphanAfterMs`: a `starting` row that never got a pid within 60 s is lost too, since the process
+//   that was spawning it died and the row would otherwise hold a slot forever (M-number of reconcile).
 // - stopRun marks the row stopped, sends SIGTERM to its process group, and SIGKILL after the grace period (10 s).
 
 import { spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
-import { join } from 'node:path';
 import { refused } from './errors.js';
 import { bootstrapNode, jvEntry } from './env.js';
 import { processCommandLine, processGroup as procGroup, processZombie } from './proc.js';
@@ -156,18 +157,44 @@ export function isRunAlive(session: Pick<SessionRow, 'id' | 'pid'>): boolean {
 
 const LIVE_STATES: readonly SessionState[] = ['starting', 'running'];
 
+/** A run another process is starting is left alone this long (brief section 3, reconcile). */
+export const STARTING_GRACE_MS = 60_000;
+
+export interface MarkLostOptions {
+  alive?: (s: SessionRow) => boolean;
+  /** Rows this returns true for are not looked at (reconcile: a task another process is starting). */
+  skip?: (s: SessionRow) => boolean;
+  /**
+   * A `starting` row with no pid whose start is older than this is lost too: the process that was spawning it died
+   * between moving it to starting and recording the pid, and nothing else would ever end it (reconcile passes
+   * STARTING_GRACE_MS; the default leaves such rows alone, as the lifted markLost did).
+   */
+  orphanAfterMs?: number;
+  /** Milliseconds since the epoch (tests). */
+  now?: number;
+}
+
 /** Marks starting/running rows lost when their process is gone and no `end` event arrived. Returns them. */
-export function markLost(store: Store, options: { alive?: (s: SessionRow) => boolean } = {}): SessionRow[] {
+export function markLost(store: Store, options: MarkLostOptions = {}): SessionRow[] {
   const alive = options.alive ?? isRunAlive;
+  const now = options.now ?? Date.now();
   const lost: SessionRow[] = [];
   for (const s of store.listSessions({ states: LIVE_STATES })) {
-    if (s.pid === null) continue;
-    if (alive(s)) continue;
+    if (options.skip?.(s)) continue;
+    let reason: string;
+    if (s.pid === null) {
+      const since = s.started_at ? Date.parse(s.started_at) : Number.NaN;
+      if (options.orphanAfterMs === undefined || s.state !== 'starting' || !(now - since > options.orphanAfterMs)) continue;
+      reason = `no process was recorded within ${Math.round(options.orphanAfterMs / 1000)} s of starting`;
+    } else {
+      if (alive(s)) continue;
+      reason = `process ${s.pid} ended without an end event`;
+    }
     const row = store.tx(() => {
-      const now = store.getSession(s.id);
-      if (!now || !LIVE_STATES.includes(now.state)) return undefined;
+      const current = store.getSession(s.id);
+      if (!current || !LIVE_STATES.includes(current.state) || current.pid !== s.pid) return undefined;
       if (store.lastEvent(s.id, 'end')) return undefined;
-      return store.setSessionState(s.id, 'lost', `process ${s.pid} ended without an end event`);
+      return store.setSessionState(s.id, 'lost', reason);
     });
     if (row) lost.push(row);
   }
