@@ -347,3 +347,20 @@ copy of the skills checkout; a key the skills runtime prints and this jv drops i
 those outputs), a key or flag only this jv has is listed with its reason. M3's temporary home copies the providers,
 secrets and seeds but disables Codex: every copy of the member's Codex login shares one refresh token (D-022), and an
 answer task never runs on Codex.
+
+## M-036 What M17 counts as the member daemons' own writes
+
+M17 says no file under `~/.jevellan`, `~/.jevellan-member` or `~/.jevellan-playground` may change after the start
+"except files the member daemon itself writes under its logs/ and cache/". On this machine the two daemons also
+rewrite their own state while they run: `hub/jevellan.db` and its WAL, `locks/activity.json`, `cleanup/last-run.json`,
+`rigging/application.json` and `settings-sync.json` changed within the first two hours with jv doing nothing there
+(checked with `find -newer` against the phase 0 marker). jv never writes into those folders (D-011 refuses any home
+inside them; seeds.json is only read), so the journey lists those top-level state locations as the daemons' own and
+counts anything else, and always counts anything under `homes/` or `projects/` (the account homes and checkouts jv
+reads). The daemons' pids must also be the phase 0 ones.
+
+## M-037 How M16 looks for the token variable names
+
+M16 greps for the brief's two token variable names, but the journey file itself lives in `acceptance/`, one of the
+places it greps, and its result file is written there. The journey builds the two names from parts, labels them
+"literal 1" and "literal 2" in its output, and never prints them, so a match can only come from a real leak.
