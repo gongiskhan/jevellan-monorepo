@@ -342,10 +342,12 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   store-v2.test.ts write-error test.
 - 2026-11-01 Phase 7 review of what is crucial (brief section 13, phase 7): four reviewers (secrets handling, the
   never-delete rules, the member and the owner's configuration untouched, schema migration) and two independent
-  verifiers per finding. 18 findings; 12 confirmed by both verifiers and fixed with reproducing tests (M-083 to
+  verifiers per finding. 18 findings, some reported twice; 12 confirmed by both verifiers and fixed with reproducing tests (M-083 to
   M-095); 2 disputed (journey children inheriting CLAUDE_CONFIG_DIR, extensions skipped after another process
-  migrated) reproduced as real and fixed; 4 refuted by both verifiers and left (improve-memory rewording in place:
-  the memory keeps its id and the job's result_json records the change; M17's file check and its exclusions: the
-  exclusions are the member daemon's own write paths of M-036). Known and left: landing check tails are cut before
+  migrated) reproduced as real and fixed; 3 refuted by both verifiers and left: improve-memory rewording a memory in
+  place (the reword is logged in memory_log with the job, and the old wording stays in the store with the job's
+  task), M17's file check not seeing moves, symlinks or chmod (real, but no jv path writes there: providerHomeProblem
+  refuses any provider home inside ~/.jevellan*, symlinks resolved, at load, before seeding and at run time), and
+  M17's exclusions of the member's hub/, locks/ and cleanup/ (recorded in M-036). Known and left: landing check tails are cut before
   masking (same class as M-083, lower likelihood), event rows written before M-083 are not rewritten (the MCP and UI
   mask on the way out), and `jv bot start` in a terminal ignores SIGHUP's default (its lock is now harmless).
