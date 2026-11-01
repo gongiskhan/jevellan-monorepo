@@ -82,3 +82,31 @@ Checked with `sw_vers`, `uname -m`, `df -h /`, `--version` of each tool, `lsof -
 - Codex server-side: `codex app-server` (0.154.0 on PATH) under `CODEX_HOME=~/.jv/homes/codex/.codex` answers
   `account/read` (`refreshToken: false`) with a ChatGPT `pro` login and `account/rateLimits/read` without error, so
   the copied login is ready (D-013's probe, run by hand).
+
+## 2026-11-01 Phase 1: the lift on macOS
+
+- The skills runtime at `bcf93d2`, built in a scratch copy of the whole repository with its own TypeScript 7.0.2,
+  runs 390 tests here: 360 pass, 30 fail. Every failure is macOS: `/var` is a symlink to `/private/var` (paths
+  compared without resolving, in the code and in the tests), and `/proc` does not exist (process command lines,
+  zombie state and process groups). M-009 records the code fixes.
+- The same sources compile with TypeScript 5.9.3 unchanged, also with `composite` and `declaration` on
+  (`tsc -p` with a config that sets both, no TS2742 errors), with `target` ES2022 and `lib` ES2023 (M-010).
+- After the split and the fixes: core 298, cli 84, ui 16 tests pass (`npm test` in each package).
+- A store created by the skills runtime's `openStore()` dumps 28 `sqlite_master` rows; the fixture
+  `packages/core/test/fixtures/schema-v1.sqlite-master.json` holds them and `store-v2.test.ts` compares a schema 1
+  store of this jv with it.
+
+## 2026-11-01 Phase 1: the real ~/.jv
+
+- `node bin/jv.mjs bootstrap --skills ~/dev/jevellan-skills` (Node 22.22.0) linked `~/.jv/runtime` to
+  `packages/core`, installed the 14 skills into `~/.jv/skill-sets/0.1.0-0ccc6e1c-20261101T175809Z`, wrote the shim,
+  seeded `.claude.json` of `claude-main` and `claude-second` from the member homes (one file each, read only) and
+  left the Codex home alone ("target home has a login already", the `auth.json` copied in phase 0), and added the Stop
+  hook to the three Claude homes.
+- `jv providers check` (6.7 s): `claude-main` ready (week 66%), `claude-second` ready (week 44%), `codex` ready
+  (ChatGPT pro, week 1%, model `gpt-6-astra`), `glm`, `deepseek` and `kimi` "needs login" (no key file), `ollama`
+  ready (it answers; it has no model), Jev reachable with `jev-latest` listed. Five-hour usage is unknown for all,
+  as on dev-madrid.
+- `jv project add ~/jevellan-projects/jv-mono-sandbox --name jv-mono-sandbox` registered P0485KS; its project.json
+  then got M-004's commands. `jv doctor` in the sandbox: every line OK except WARN for the three providers without
+  key files; `store: schema 2`.
