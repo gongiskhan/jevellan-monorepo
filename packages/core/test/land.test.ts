@@ -703,6 +703,11 @@ describe('the landing state', () => {
     assert.equal(L.pathMatches('db', 'db'), true);
     assert.equal(L.pathMatches('dbx/a', 'db'), false);
     assert.equal(L.pathMatches('src/auth/x.ts', './src/auth'), true);
+    // M-039: ** is every file, a trailing /** everything under the folder.
+    assert.equal(L.pathMatches('README.md', '**'), true);
+    assert.equal(L.pathMatches('.apm/skills/jevellan-router/SKILL.md', '**'), true);
+    assert.equal(L.pathMatches('docs/a.md', 'docs/**'), true);
+    assert.equal(L.pathMatches('src/a.ts', 'docs/**'), false);
   });
 
   test('parseNumstat counts binary files as 0 and keeps tabs in names', () => {

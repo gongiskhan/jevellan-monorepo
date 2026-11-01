@@ -122,6 +122,9 @@ export function detectCommands(repo: string): { testCommand: string | null; devC
 /** The project whose every landing asks the owner (brief section 10; the improver's SKILLS_PROJECT). */
 export const SKILLS_PROJECT_NAME = 'jevellan-skills';
 
+/** The rules.json jv project add writes for jevellan-skills: every landing asks the owner (M-039). */
+export const SKILLS_RULES = { rules: [{ id: 'R1', when: {}, set: { landingRoute: 'ask-owner' }, note: "skill changes are the owner's to land" }] };
+
 /** landing.json of a new project: the template, with every path risky for jevellan-skills. */
 export function landingTemplate(name: string): Record<string, unknown> {
   const template = readTemplate('landing.json');
@@ -144,7 +147,7 @@ export interface AddProjectResult {
   /** Set when the project was registered with another default branch, which this call replaced. */
   branchChangedFrom?: string;
   folder: string;
-  files: Record<'project.json' | 'landing.json' | 'notes.md' | 'workflows/', 'created' | 'kept'>;
+  files: Record<'project.json' | 'landing.json' | 'notes.md' | 'workflows/', 'created' | 'kept'> & { 'rules.json'?: 'created' | 'kept' };
   exclude: { file: string; added: string[] };
   skills: SkillInstallSummary | { skipped: string };
 }
@@ -194,6 +197,9 @@ export function addProject(path: string, options: { name?: string } = {}): AddPr
     'landing.json': writeIfMissing(paths.projectLanding(name), `${JSON.stringify(landingTemplate(name), null, 2)}\n`),
     'notes.md': writeIfMissing(paths.projectNotes(name), ''),
     'workflows/': existsSync(paths.projectWorkflowsDir(name)) ? 'kept' : 'created',
+    // M-039: jevellan-skills changes are always the owner's to land: every file is risky (landing.json) and a rule
+    // forces the route after Jev (D-032), so a skill change is never landed on Jev's word alone.
+    ...(name === SKILLS_PROJECT_NAME ? { 'rules.json': writeIfMissing(paths.projectRules(name), `${JSON.stringify(SKILLS_RULES, null, 2)}\n`) } : {}),
   };
   mkdirSync(paths.projectWorkflowsDir(name), { recursive: true });
 

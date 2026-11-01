@@ -374,3 +374,36 @@ the preference reaches every step. This repository changes no skill body (brief 
 entry record the request, and the skills run decides when to adopt it. The planner and improver templates
 (`packages/planner/templates`, `packages/improver/templates`) are likewise candidates to become duty skills
 (`jevellan-duty-planner`, `jevellan-duty-improve-memory`, and so on) once the owner has seen them work (M-018).
+
+## M-039 jevellan-skills lands only through the owner (amends D-047)
+
+`jv project add` of a project named jevellan-skills writes landing.json with `riskyPaths: ["**"]` (`pathMatches` now
+reads `**` as every file and a trailing `/**` as everything under a folder) and a rules.json whose one rule, with an
+empty `when`, sets `landingRoute: ask-owner` (D-032 applies it after Jev). Risky paths alone leave the route to Jev's
+judgement; the rule makes a skill change a proposal the owner lands or leaves, every time, as section 10 says.
+
+## M-040 Job work tasks start through the bot's admission (amends M-017)
+
+`stepJobs` creates a job's work task with `start: false`, so reconcile admits it on the next tick under the limits and
+quiet hours, and a Jev refusal is retried at reconcile's pace (M-026). A work task that cannot be created leaves the
+job queued with "work task not created: ..." and the next pass tries the same request id `job:<J>`. createJob checks
+"already running" and inserts in one transaction; a new job's reason is "waiting for the bot's next tick". `finish()`
+reads the newest report of the task's work step (the kind's duty), never a later verify step's.
+
+## M-041 improve-docs and improve-skills land their work
+
+A single task ends without landing, so their post-processors call `landTask(store, task, {auto: true})` when the work
+task changed files and has neither landed nor started a landing; the job is done either way and `result_json.landing`
+records `{route, state, commit, reason}` (an error of the landing itself is state `error`). An improve-docs task that
+changed a file outside the documentation (README.md, AGENTS.md, CHANGELOG.md, docs/) is not landed and
+`result_json.notLanded` names the files.
+
+## M-042 Goals, model nulls, and what counts as project work
+
+A goal moves from open or paused to done, and done is final; pause takes an open goal; a done goal refuses pause with
+exit 2; no command reopens a paused goal (the brief names none). Goal titles are one line. The plan's `duty` and a
+merge's `text` accept null as none; an improve-memory operation jevellan-memory refuses is skipped with its reason on
+its own savepoint, so one bad operation never loses the others. The plan task's recent and open lists and the
+improver's inputs leave out the jobs' own work tasks (request id `job:`) but keep the tasks a plan created. jevellan-cli
+depends on jevellan-planner and jevellan-improver for `jv job run` and `jv improve`; a job cancelled today keeps its
+request id, so `jv job run` of that kind returns it with exit 0 until `--force`.

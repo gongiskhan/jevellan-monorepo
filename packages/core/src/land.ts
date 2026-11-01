@@ -241,9 +241,15 @@ export const LandingRouteStateSchema = z.strictObject({
 export type LandingRouteState = z.infer<typeof LandingRouteStateSchema>;
 
 /** Ported pathMatches: a file is under a risky path when it is that path or below it. */
+/**
+ * Whether a changed file is at or under a riskyPaths entry. `**` is every file and a trailing `/**` everything under
+ * that folder (M-039: jevellan-skills marks every file risky).
+ */
 export function pathMatches(file: string, path: string): boolean {
   const p = path.replace(/^\.\//, '').replace(/\/+$/u, '');
-  return p !== '' && (file === p || file.startsWith(`${p}/`));
+  if (p === '**') return file !== '';
+  const prefix = p.endsWith('/**') ? p.slice(0, -3) : p;
+  return prefix !== '' && (file === prefix || file.startsWith(`${prefix}/`));
 }
 
 interface ReportJson {

@@ -259,6 +259,8 @@ describe('jv improve and jv job run improve-*', () => {
     const added = json<{ project: { name: string }; files: Record<string, string> }>('project', 'add', skillsRepo, '--name', 'jevellan-skills');
     assert.deepEqual([added.project.name, added.files['landing.json']], ['jevellan-skills', 'created']);
     assert.deepEqual(JSON.parse(readFileSync(join(home, 'projects', 'jevellan-skills', 'landing.json'), 'utf8')), { riskyPaths: ['**'], checks: [] });
+    // M-039: and a rule that routes every landing of it to the owner.
+    assert.deepEqual(JSON.parse(readFileSync(join(home, 'projects', 'jevellan-skills', 'rules.json'), 'utf8')).rules[0].set, { landingRoute: 'ask-owner' });
     // Any other project keeps the template as it is.
     json('project', 'add', makeRepo('plain'), '--name', 'plain');
     assert.deepEqual(JSON.parse(readFileSync(join(home, 'projects', 'plain', 'landing.json'), 'utf8')), { riskyPaths: [], checks: [] });
