@@ -1,0 +1,11 @@
+.claude/
+CLAUDE.md
+node_modules/
+dist/
+dist-test/
+.jv-evidence/
+*.sqlite*
+*.tsbuildinfo
+test-results/
+playwright-report/
+acceptance/baseline/run-start.marker
