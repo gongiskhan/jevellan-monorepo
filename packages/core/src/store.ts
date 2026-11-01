@@ -2,10 +2,13 @@
 //
 // - Schema 1 below is section 4 of the skills brief, verbatim (SCHEMA_SQL, byte for byte the lifted runtime's).
 //   Schema 2 (SCHEMA_V2_SQL, the monorepo brief's section 3) only adds columns and tables. A version 1 store is
-//   copied once to <file>.v1.bak (VACUUM INTO, so the WAL is included) and migrated in one transaction. Schema
-//   version lives in meta.schema_version; a store newer than this jv is refused. Packages that keep their own
-//   tables in the store (jevellan-memory) register a schema extension, applied with the migration and checked on
-//   every open (M-011).
+//   migrated in one write transaction that first makes <file>.v1.bak a complete copy of it (VACUUM INTO through a
+//   second, read-only connection while the transaction holds the write lock, so the WAL is included and nothing is
+//   written between the copy and the migration; an existing .v1.bak is kept only when it holds what the store
+//   holds, and is otherwise set aside under a new name, never overwritten or deleted). Openers that arrive together
+//   wait for that lock and find version 2. Schema version lives in meta.schema_version; a store newer than this jv
+//   is refused. Packages that keep their own tables in the store (jevellan-memory) register a schema extension,
+//   applied with the migration and on every open where it is missing, whoever created or migrated the store (M-011).
 // - Pragmas: WAL, busy_timeout 5000, synchronous NORMAL, foreign_keys ON, set on every connection.
 // - Several jv processes write concurrently, each in short transactions: tx() runs BEGIN IMMEDIATE (the write
 //   lock is taken up front, so a transaction never fails half way on a lock upgrade) and retries a bounded number
@@ -16,7 +19,7 @@
 // - Every state setter writes state_reason (landings: reason) and the timestamps the state implies.
 // - Nothing in this module deletes a row, and nothing else may: there is no delete helper.
 
-import { chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { conflict, JvError, notFound, refused } from './errors.js';
@@ -304,6 +307,92 @@ export function isBusyError(error: unknown): boolean {
   const code = sqliteCode(error);
   if (code !== undefined) return (code & 0xff) === 5 || (code & 0xff) === 6;
   return /database is locked|database table is locked/i.test(String((error as Error | null)?.message ?? ''));
+}
+
+/** A database file and the files SQLite keeps beside it while it writes it. */
+const SQLITE_FILE_SUFFIXES = ['', '-journal', '-wal', '-shm'] as const;
+
+function sqliteFilesExist(path: string): boolean {
+  return SQLITE_FILE_SUFFIXES.some((suffix) => existsSync(path + suffix));
+}
+
+/** `${base}-<UTC time>`, with -2, -3... when a database file or a side file of that name exists. */
+function freeName(base: string): string {
+  const stamp = nowIso().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? `${base}-${stamp}` : `${base}-${stamp}-${n}`;
+    if (!sqliteFilesExist(name)) return name;
+  }
+}
+
+/**
+ * Renames a database file and its side files to `target` (a free name), the side files first: a journal left behind
+ * would be taken for the journal of the next file given the old name.
+ */
+function setAside(path: string, target: string): void {
+  for (const suffix of [...SQLITE_FILE_SUFFIXES.slice(1), '']) {
+    if (existsSync(path + suffix)) renameSync(path + suffix, target + suffix);
+  }
+}
+
+/** fsync of a file or, best effort, a folder (to keep a rename in it). */
+function syncFile(path: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    fsyncSync(fd);
+  } catch (error) {
+    if (statSync(path).isFile()) throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Whether two databases have the same schema (sqlite_master SQL) and the same rows in every table, compared in
+ * primary key order a row at a time (no sort and no temporary copy for a table with a primary key).
+ */
+function sameContents(a: DatabaseSync, b: DatabaseSync): boolean {
+  const schemaOf = (db: DatabaseSync) =>
+    JSON.stringify(db.prepare('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name').all());
+  if (schemaOf(a) !== schemaOf(b)) return false;
+  const quote = (name: string) => `"${name.replace(/"/g, '""')}"`;
+  const tables = a.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+  for (const { name } of tables) {
+    const columns = a.prepare(`PRAGMA table_info(${quote(name)})`).all() as Array<{ name: string; pk: number }>;
+    const keys = columns.filter((c) => c.pk > 0).sort((x, y) => x.pk - y.pk);
+    const order = (keys.length > 0 ? keys : columns).map((c) => quote(c.name)).join(', ');
+    const sql = `SELECT * FROM ${quote(name)} ORDER BY ${order}`;
+    const rows = (db: DatabaseSync) => {
+      const statement = db.prepare(sql);
+      statement.setReadBigInts(true);
+      return statement.iterate();
+    };
+    const left = rows(a);
+    const right = rows(b);
+    try {
+      for (;;) {
+        const x = left.next();
+        const y = right.next();
+        if (x.done || y.done) {
+          if (x.done !== y.done) return false;
+          break;
+        }
+        const xr = x.value as Record<string, unknown>;
+        const yr = y.value as Record<string, unknown>;
+        for (const column of columns) {
+          const xv = xr[column.name];
+          const yv = yr[column.name];
+          const same = xv instanceof Uint8Array && yv instanceof Uint8Array ? Buffer.compare(xv, yv) === 0 : xv === yv;
+          if (!same) return false;
+        }
+      }
+    } finally {
+      left.return?.();
+      right.return?.();
+    }
+  }
+  return true;
 }
 
 function isIdCollision(error: unknown, table: string): boolean {
@@ -843,7 +932,8 @@ export class Store {
    * Checks the schema version, creating the schema in a new file and migrating a version 1 store to version 2. An
    * up-to-date store is only read (no write lock), so opening the store for a read never queues behind a writer;
    * BEGIN IMMEDIATE is taken only to create or migrate, and the check is repeated inside that transaction in case
-   * another process did it first.
+   * another process did it first. Whoever created or migrated the store (another process, or a host that registers
+   * no extension), this process's registered extensions exist when it returns.
    */
   private migrate(): void {
     const target = this.createVersion ?? SCHEMA_VERSION;
@@ -859,52 +949,39 @@ export class Store {
       throw refused(`store schema version ${version} does not match this runtime (${SCHEMA_VERSION}); run jv update`);
     };
 
-    if (this.retryBusy(metaExists)) {
-      const version = this.retryBusy(readVersion);
-      if (version === target) {
-        if (target === SCHEMA_VERSION) this.ensureExtensions();
-        return;
-      }
-      if (version === SCHEMA_V1_VERSION && target === SCHEMA_VERSION) {
-        this.migrateV1ToV2();
-        return;
-      }
-      refuseOther(version);
+    if (!this.retryBusy(metaExists)) {
+      this.tx(() => {
+        if (metaExists()) return; // another process created the store first; its version is checked below
+        const tables = this.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+        if (tables.length > 0) throw refused(`${this.file} has tables but no schema version; it is not a jv store`);
+        this.db.exec(SCHEMA_SQL);
+        if (target === SCHEMA_VERSION) {
+          this.db.exec(SCHEMA_V2_SQL);
+          for (const ext of schemaExtensions.values()) ext.ensure(this.db);
+        }
+        this.run('INSERT INTO meta (key, value) VALUES (?, ?)', 'schema_version', target);
+      });
     }
-    this.tx(() => {
-      if (metaExists()) {
-        const version = readVersion();
-        if (version === target) return;
-        if (version === SCHEMA_V1_VERSION && target === SCHEMA_VERSION) return; // migrated below, outside this tx
-        refuseOther(version);
-      }
-      const tables = this.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
-      if (tables.length > 0) throw refused(`${this.file} has tables but no schema version; it is not a jv store`);
-      this.db.exec(SCHEMA_SQL);
-      if (target === SCHEMA_VERSION) {
-        this.db.exec(SCHEMA_V2_SQL);
-        for (const ext of schemaExtensions.values()) ext.ensure(this.db);
-      }
-      this.run('INSERT INTO meta (key, value) VALUES (?, ?)', 'schema_version', target);
-    });
-    if (target === SCHEMA_VERSION && this.retryBusy(readVersion) === SCHEMA_V1_VERSION) this.migrateV1ToV2();
+    const version = this.retryBusy(readVersion);
+    if (version === SCHEMA_V1_VERSION && target === SCHEMA_VERSION) this.migrateV1ToV2();
+    else if (version !== target) refuseOther(version);
+    if (target === SCHEMA_VERSION) this.ensureExtensions();
   }
 
   /**
-   * Version 1 to 2: copy the file once to <file>.v1.bak (VACUUM INTO writes a consistent copy that includes the
-   * WAL), then in one transaction add the schema 2 columns and tables, the registered extensions, one coordinator
-   * conversation task per project (M-012) and the new version.
+   * Version 1 to 2, in one write transaction (BEGIN IMMEDIATE) that rechecks the version: first <file>.v1.bak is
+   * made a complete copy of the store (backupV1), then the schema 2 columns and tables, the registered extensions,
+   * one coordinator conversation task per project (M-012) and the new version are added. The copy is taken under
+   * the transaction's write lock, before its first write, so no write lands between the copy and the migration, and
+   * an opener that arrives meanwhile waits for the lock and then finds version 2. A crash at any point leaves the
+   * store at version 1 (the transaction rolls back) or at a complete version 2.
    */
   private migrateV1ToV2(): void {
-    const backup = `${this.file}.v1.bak`;
-    if (this.file !== ':memory:' && !existsSync(backup)) {
-      this.retryBusy(() => this.db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`));
-      chmodSync(backup, 0o600);
-    }
     this.tx(() => {
       const version = this.get<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")?.value;
-      if (version === SCHEMA_VERSION) return;
+      if (version === SCHEMA_VERSION) return; // another process migrated it while this one waited for the lock
       if (version !== SCHEMA_V1_VERSION) throw refused(`store schema version ${String(version)} cannot be migrated to ${SCHEMA_VERSION}`);
+      if (this.file !== ':memory:') this.backupV1();
       this.db.exec(SCHEMA_V2_SQL);
       for (const ext of schemaExtensions.values()) ext.ensure(this.db);
       for (const project of this.listProjects()) this.coordinatorTask(project.id);
@@ -912,7 +989,84 @@ export class Store {
     });
   }
 
-  /** Applies a registered extension whose tables are missing (one registered after the store was created). */
+  /**
+   * Makes <file>.v1.bak a complete copy of this version 1 store, from inside the migration's write transaction
+   * (nothing else writes the store, or these files, meanwhile). An existing .v1.bak is never overwritten or deleted:
+   * it is kept when it holds exactly what the store holds, and otherwise set aside under a new name (.invalid-<time>
+   * when it is not a complete version 1 store, .prev-<time> when it is one with other contents, each with its
+   * -journal, -wal or -shm). A new copy is written to <file>.v1.bak.tmp (mode 600 from the start) by VACUUM INTO
+   * through a second, read-only connection (VACUUM cannot run inside a transaction; the write lock held here keeps
+   * the snapshot it reads equal to the store being migrated), synced, checked the same way, then renamed into place.
+   * A .v1.bak.tmp found here was left by an opener that died during its copy and is set aside as .partial-<time>.
+   */
+  private backupV1(): void {
+    const backup = `${this.file}.v1.bak`;
+    const staged = `${backup}.tmp`;
+    if (sqliteFilesExist(staged)) setAside(staged, freeName(`${backup}.partial`));
+    if (sqliteFilesExist(backup)) {
+      const problem = this.v1CopyProblem(backup);
+      if (problem === undefined) return;
+      setAside(backup, freeName(`${backup}.${problem}`));
+    }
+    closeSync(openSync(staged, 'wx', 0o600)); // VACUUM INTO writes into an empty file and keeps its mode
+    let published = false;
+    try {
+      const source = new DatabaseSync(this.file, { readOnly: true });
+      try {
+        source.exec('PRAGMA busy_timeout = 5000');
+        source.exec(`VACUUM INTO '${staged.replace(/'/g, "''")}'`);
+      } catch (error) {
+        if (isBusyError(error)) throw error; // tx() retries the whole migration
+        const reason = (error as Error | null)?.message ?? String(error);
+        throw new Error(`could not copy ${this.file} to ${backup} before migrating it (${reason}); the store is unchanged`, { cause: error });
+      } finally {
+        source.close();
+      }
+      chmodSync(staged, 0o600);
+      syncFile(staged); // VACUUM INTO does not sync its output
+      const problem = this.v1CopyProblem(staged);
+      if (problem !== undefined) {
+        throw new Error(`the copy of ${this.file} taken before migrating it is not complete (${problem}); the store is unchanged`);
+      }
+      if (sqliteFilesExist(backup)) throw new Error(`${backup} appeared during the copy; the store is unchanged`);
+      renameSync(staged, backup);
+      published = true;
+      syncFile(dirname(backup));
+    } finally {
+      // This process's own copy, never published (a failed or interrupted VACUUM INTO, a full disk): removed.
+      if (!published) for (const suffix of SQLITE_FILE_SUFFIXES) rmSync(staged + suffix, { force: true });
+    }
+  }
+
+  /**
+   * Why the file at `path` is not a complete version 1 copy of this store as it is now, or undefined when it is
+   * one: 'invalid' when it is no complete version 1 store (empty, not a database, damaged, beside a journal an
+   * interrupted write left, another schema version), 'prev' when it is one whose schema or rows differ from the
+   * store's (an older copy, or another store's). The file is opened read only, and never when a journal is beside
+   * it (SQLite would roll that journal back into it).
+   */
+  private v1CopyProblem(path: string): 'invalid' | 'prev' | undefined {
+    if (SQLITE_FILE_SUFFIXES.some((suffix) => suffix !== '' && existsSync(path + suffix))) return 'invalid';
+    if (!existsSync(path) || statSync(path).size === 0) return 'invalid';
+    let copy: DatabaseSync | undefined;
+    try {
+      copy = new DatabaseSync(path, { readOnly: true });
+      const check = copy.prepare('PRAGMA quick_check').get() as { quick_check?: unknown } | undefined;
+      if (check?.quick_check !== 'ok') return 'invalid';
+      const version = copy.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value?: unknown } | undefined;
+      if (version?.value !== SCHEMA_V1_VERSION) return 'invalid';
+      return sameContents(this.db, copy) ? undefined : 'prev';
+    } catch {
+      return 'invalid';
+    } finally {
+      copy?.close();
+    }
+  }
+
+  /**
+   * Applies a registered extension whose tables are missing: one registered after the store was created, or a store
+   * that another process, or a host that registers no extension, created or migrated while this one waited.
+   */
   private ensureExtensions(): void {
     for (const ext of schemaExtensions.values()) {
       if (this.retryBusy(() => ext.present(this.db))) continue;
