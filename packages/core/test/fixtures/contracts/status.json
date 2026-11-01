@@ -86,5 +86,19 @@
       "landedCommit": "4e1d2c3b5a6978f0e1d2c3b4a5968778695a4b3c"
     }
   ],
-  "lost": []
+  "lost": [],
+  "bot": {
+    "alive": false,
+    "pid": null,
+    "heartbeatAt": null,
+    "heartbeatAgeSeconds": null,
+    "startedAt": null,
+    "tick": null,
+    "running": 0,
+    "queued": 0,
+    "limits": {
+      "perProject": 2,
+      "total": 4
+    }
+  }
 }

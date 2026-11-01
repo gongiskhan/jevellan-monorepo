@@ -14,7 +14,8 @@ const { openStore } = await import('../src/store.js');
 const port = await import('../src/memory-port.js');
 const tools = await import('../src/tools/index.js');
 const { handleMessage } = await import('../src/report-mcp.js');
-const { writeReport, checkUi, reportView } = await import('../src/report.js');
+const { writeReport, reportView } = await import('../src/report.js');
+const { checkReportUi: checkUi } = await import('../src/contracts/a2ui.js');
 const prompt = await import('../src/prompt.js');
 const { executeRun } = await import('../src/run.js');
 const launcher = await import('../src/launcher.js');
@@ -126,11 +127,12 @@ describe('the report ui field', () => {
       assert.match((r as { reason: string }).reason, why);
     };
     bad({}, /not an array/);
-    bad([], /empty/);
-    bad([{ version: 'v0.8', createSurface: {} }], /message 1/);
+    bad([{ version: 'v0.9', createSurface: { catalogId: 'basic' } }], /no surfaceId/);
+    
+    bad([{ version: 'v0.8', createSurface: {} }], /ui\[0\] has version/);
     bad([{ version: 'v0.9', createSurface: {}, deleteSurface: {} }], /exactly one/);
     bad([{ version: 'v0.9' }], /exactly one/);
-    bad([{ version: 'v0.9', createSurface: { blob: 'x'.repeat(70_000) } }], /more than 65536/);
+    bad([{ version: 'v0.9', createSurface: { surfaceId: 's', blob: 'x'.repeat(70_000) } }], /at most 65536/);
   });
 
   test('a valid ui is stored and read back; an invalid one is dropped with a limitation and the report still recorded', () => {
@@ -143,7 +145,7 @@ describe('the report ui field', () => {
     assert.equal(dropped.outcome, 'recorded');
     const row = store.getReportBySession(b.id)!;
     assert.equal(row.ui_json, null);
-    assert.match(row.limitations!, /^none known ui dropped: message 1: /);
+    assert.match(row.limitations!, /^none known ui dropped: ui\[0\] has none of /);
   });
 });
 

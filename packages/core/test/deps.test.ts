@@ -1,5 +1,6 @@
 // Dependency direction (brief section 2): read every packages/*/package.json of the repository and check that core
-// and memory depend on nothing in the repository; scheduler, planner, improver and mcp only on core and memory; bot
+// and memory depend on nothing in the repository; scheduler, planner and improver only on core and memory, mcp also on
+// scheduler, planner and improver (M-019: its tools call them); bot
 // on those and scheduler, planner, improver; ui on everything but bot and cli; cli on everything. A package lists only
 // what it imports and imports only what it lists: its source (src/, server/, web/) is scanned for jevellan-*
 // specifiers (static, re-export and dynamic imports) and they must be exactly its jevellan-* dependencies. A repository
@@ -24,7 +25,8 @@ const ALLOWED: Readonly<Record<string, readonly string[]>> = {
   scheduler: ['core', 'memory'],
   planner: ['core', 'memory'],
   improver: ['core', 'memory'],
-  mcp: ['core', 'memory'],
+  // M-019: every tool of section 5 is a thin call into core, memory, scheduler, planner or improver.
+  mcp: ['core', 'memory', 'scheduler', 'planner', 'improver'],
   bot: ['core', 'memory', 'scheduler', 'planner', 'improver'],
   ui: ['core', 'memory', 'scheduler', 'planner', 'improver', 'mcp'],
   cli: ['core', 'memory', 'scheduler', 'planner', 'improver', 'mcp', 'ui', 'bot'],
@@ -75,11 +77,12 @@ function sourceFiles(dir: string): string[] {
 
 /** Code without its comments (a header comment may quote an import). */
 function withoutComments(text: string): string {
+  // Line comments first: one may hold a glob such as docs/** that would otherwise open a block comment.
   return text
-    .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n');
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
 const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](jevellan-[a-z0-9-]+)(?:\/[^'"]*)?['"]/g;

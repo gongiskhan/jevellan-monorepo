@@ -16,10 +16,11 @@
 // The monorepo adds one optional field (brief section 3): `ui`, an array of A2UI messages the step attaches for the
 // owner (a form, a table of choices, images with captions), each an object with `version` "v0.9" or "1.0" and exactly
 // one of createSurface, updateComponents, updateDataModel, deleteSurface, at most 65536 characters serialised. It is
-// checked apart from the rest: invalid `ui` is dropped with "ui dropped: <reason>" appended to limitations and the
-// report is still recorded (reports.ui_json, schema 2).
+// checked apart from the rest (contracts/a2ui.ts checkReportUi): invalid `ui` is dropped with "ui dropped: <reason>"
+// appended to limitations and the report is still recorded (reports.ui_json, schema 2).
 
 import { z } from 'zod';
+import { checkReportUi } from './contracts/a2ui.js';
 import { recordEvent } from './events.js';
 import { notFound } from './errors.js';
 import { defaultRedactor, type Redactor } from './redact.js';
@@ -100,41 +101,6 @@ export const ReportFieldsSchema = z.strictObject({
     ),
 });
 
-/** The A2UI agent messages a report's ui may carry (A2UI v0.9 and the 1.0 specification name the same four). */
-export const A2UI_MESSAGE_KEYS = ['createSurface', 'updateComponents', 'updateDataModel', 'deleteSurface'] as const;
-export const A2UI_VERSIONS = ['v0.9', '1.0'] as const;
-export const UI_MAX_CHARS = 65536;
-
-/** One A2UI message as a report carries it. */
-export const A2uiMessageSchema = z
-  .object({
-    version: z.enum(A2UI_VERSIONS),
-    createSurface: z.record(z.string(), z.unknown()).optional(),
-    updateComponents: z.record(z.string(), z.unknown()).optional(),
-    updateDataModel: z.record(z.string(), z.unknown()).optional(),
-    deleteSurface: z.record(z.string(), z.unknown()).optional(),
-  })
-  .strict()
-  .refine((m) => A2UI_MESSAGE_KEYS.filter((k) => m[k] !== undefined).length === 1, {
-    message: 'each message needs exactly one of createSurface, updateComponents, updateDataModel, deleteSurface',
-  });
-export type A2uiMessage = z.output<typeof A2uiMessageSchema>;
-
-/** Checks a report's ui array: the messages, or why it is dropped. */
-export function checkUi(ui: unknown): { ok: true; messages: A2uiMessage[] } | { ok: false; reason: string } {
-  if (!Array.isArray(ui)) return { ok: false, reason: 'ui is not an array' };
-  if (ui.length === 0) return { ok: false, reason: 'ui is empty' };
-  const size = JSON.stringify(ui).length;
-  if (size > UI_MAX_CHARS) return { ok: false, reason: `ui is ${size} characters, more than ${UI_MAX_CHARS}` };
-  const messages: A2uiMessage[] = [];
-  for (const [i, m] of ui.entries()) {
-    const r = A2uiMessageSchema.safeParse(m);
-    if (!r.success) return { ok: false, reason: `message ${i + 1}: ${r.error.issues[0]?.message ?? 'invalid'}` };
-    messages.push(r.data);
-  }
-  return { ok: true, messages };
-}
-
 export type Report = z.output<typeof ReportFieldsSchema>;
 export type ReportInput = z.input<typeof ReportFieldsSchema>;
 
@@ -164,12 +130,12 @@ export function parseReport(input: unknown): ParsedReport {
     if (!report.options || report.options.length < 2) return { ok: false, error: `The report is not valid: options: ${NEEDS_DECISION_OPTIONS}` };
   }
   if (report.ui !== undefined) {
-    const ui = checkUi(report.ui);
+    const ui = checkReportUi(report.ui);
     if (!ui.ok) {
       const { ui: _dropped, ...rest } = report;
       return { ok: true, report: rest as Report, uiDropped: ui.reason };
     }
-    return { ok: true, report: { ...report, ui: ui.messages } };
+    return { ok: true, report: { ...report, ui: ui.ui } };
   }
   return { ok: true, report };
 }

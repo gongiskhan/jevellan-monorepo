@@ -523,7 +523,7 @@ test('every written schema produces the lifted type it describes, with the same 
     assignable<PlacementChosen>(null as unknown as z.output<typeof C.PlacementChosenSchema>);
     assignable<StatusView>(null as unknown as z.output<typeof C.StatusSchema>);
     assignable<TaskView>(null as unknown as z.output<typeof C.TaskShowSchema>);
-    assignable<ReportView>(null as unknown as Omit<z.output<typeof C.ReportViewSchema>, 'ui'>);
+    assignable<ReportView>(null as unknown as z.output<typeof C.ReportViewSchema>);
     assignable<DecisionRow>(null as unknown as z.output<typeof C.DecisionRowSchema>);
     assignable<EventRow>(null as unknown as z.output<typeof C.EventRowSchema>);
     assignable<ReportRow>(null as unknown as z.output<typeof C.ReportRowSchema>);
@@ -536,7 +536,7 @@ test('every written schema produces the lifted type it describes, with the same 
     sameKeys<SameKeys<TaskView, z.output<typeof C.TaskShowSchema>>>();
     sameKeys<SameKeys<TaskView['steps'][number], z.output<typeof C.StepViewSchema>>>();
     sameKeys<SameKeys<TaskView['steps'][number]['runs'][number], z.output<typeof C.RunViewSchema>>>();
-    sameKeys<SameKeys<ReportView, Omit<z.output<typeof C.ReportViewSchema>, 'ui'>>>();
+    sameKeys<SameKeys<ReportView, z.output<typeof C.ReportViewSchema>>>();
     sameKeys<SameKeys<DecisionRow, z.output<typeof C.DecisionRowSchema>>>();
     sameKeys<SameKeys<EventRow, z.output<typeof C.EventRowSchema>>>();
     sameKeys<SameKeys<ReportRow, z.output<typeof C.ReportRowSchema>>>();

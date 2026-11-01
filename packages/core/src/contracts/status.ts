@@ -54,6 +54,19 @@ export const SessionStatusSchema = z.strictObject({
 });
 
 /** `jv status --json` (status.ts StatusView). */
+/** The bot's state as jv status reads it from the store's meta rows (bot-state.ts, brief sections 4 and 8). */
+export const BotStateSchema = z.strictObject({
+  alive: z.boolean(),
+  pid: z.number().int().positive().nullable(),
+  heartbeatAt: IsoTimeSchema.nullable(),
+  heartbeatAgeSeconds: z.number().int().nonnegative().nullable(),
+  startedAt: IsoTimeSchema.nullable(),
+  tick: z.number().int().nonnegative().nullable(),
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+  limits: z.strictObject({ perProject: z.number().int().positive(), total: z.number().int().positive() }),
+});
+
 export const StatusSchema = z.strictObject({
   tasks: z.array(TaskStatusSchema),
   sessions: z.array(SessionStatusSchema),
@@ -69,5 +82,6 @@ export const StatusSchema = z.strictObject({
   ),
   /** Runs marked lost by this read. */
   lost: z.array(SessionIdSchema),
+  bot: BotStateSchema,
 });
 export type StatusContract = z.output<typeof StatusSchema>;
