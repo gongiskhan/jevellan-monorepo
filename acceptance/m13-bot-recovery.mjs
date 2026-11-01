@@ -46,7 +46,10 @@ import {
 
 const JOURNEY = 'm13';
 const USAGE = 'node acceptance/m13-bot-recovery.mjs [--keep] [--timeout-min 30]';
+// The first turn must still be working when the journey kills it, so it starts with a long sleep; the resumed turn
+// is told not to sleep again, so the recovery finishes quickly.
 const TEXT = [
+  'First, at the very start of your first turn, run `sleep 90` in the shell once (this test needs the turn to be busy for a while). If you are resumed after an interruption, do not sleep again: go straight on with the work.',
   'What: add a one-line JSDoc comment above every exported function in src/invoices/index.ts that says what the function returns.',
   'Why: the module has no documentation of its return values.',
   'Where: src/invoices/index.ts only; do not change any code, only add comments.',
@@ -105,8 +108,9 @@ async function main() {
     note(`the step runs on ${lostRun.runtime}${lostRun.runtime === 'claude-tmux' ? ' (its model is in a tmux window, outside the run\'s process group)' : ''}`);
 
     await check('its process group is killed by hand', async () => {
-      // Let the turn get going first, so the kill lands in the middle of the work.
-      await sleep(15_000);
+      // Let the turn get going first (it starts with a 90 s sleep), so the kill lands in the middle of the work.
+      await sleep(12_000);
+      if (!alive(lostRun.pid)) return { ok: false, detail: `pid ${lostRun.pid} ended before the kill (the turn finished early)` };
       const pgid = Number(run('ps', ['-o', 'pgid=', '-p', String(lostRun.pid)]).stdout.trim());
       if (!Number.isInteger(pgid) || pgid <= 1) return { ok: false, detail: `no process group for pid ${lostRun.pid}` };
       if (pgid === process.pid || pgid === Number(run('ps', ['-o', 'pgid=', '-p', String(process.pid)]).stdout.trim())) return { ok: false, detail: 'the run shares this journey\'s process group; not killing it' };

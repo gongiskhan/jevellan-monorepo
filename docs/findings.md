@@ -243,3 +243,12 @@ Checked in a temporary home on the sandbox (claude-main, `claude-opus-5-5` high,
   buttons and status are unaffected. This confirms the Node finding on the real task page.
 - 2026-11-01 Before M-081, reloading the task page after an A2UI post brought the surface back active with the step's
   first value, and pressing it again was refused ("task T is done, not waiting on an answer").
+- 2026-11-01 M13 Bot recovery: the first run failed because the implement step (claude-sdk, Sonnet medium) finished
+  in under 15 s, before the journey's kill. The task text now starts the first turn with a 90 s sleep and tells a
+  resumed turn not to sleep again. Then 6/6 in 42 s: SIGKILL to the run's process group, one `jv bot tick` marked the
+  run lost ("process ended without an end event") and resumed it on the same native session, the resumed turn ended
+  done in 20 s, and bot.log names the lost run and its resume.
+- 2026-11-01 M10 12/12 (part two: improve-memory merged the near-duplicates, one archived with superseded_by, none
+  deleted), M11 9/9 (the scheduled task 33 s after the bot's start; pause held for 70 s), M12 10/10 (the plan job
+  proposed 2 tasks with an after link; a second run the same day returned the same job), M14 7/7 (temporary owner
+  home, M-071).
