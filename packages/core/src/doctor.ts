@@ -578,7 +578,9 @@ const checkModels: Check = async (ctx) => {
   if ('status' in c) return [c];
   const probes = c.providers.map(async (p): Promise<CheckResult | undefined> => {
     const name = `models:${p.name}`;
-    if (!CLAUDE_KINDS.includes(p.kind) || !ctx.wants(name)) return undefined;
+    if (!ctx.wants(name)) return undefined;
+    if (p.kind === 'openai-compatible') return openAiModels(ctx, p, name);
+    if (!CLAUDE_KINDS.includes(p.kind)) return undefined;
     if (!p.enabled) return ok(name, 'disabled in providers.json; not probed');
     if (p.kind === 'claude-endpoint') return ok(name, `the endpoint serves its configured models (${p.models.map((m) => m.id).join(', ')}); not probed`);
     const { env, missing } = probeEnvironment(p, ctx.deps.env);
@@ -602,6 +604,36 @@ const checkModels: Check = async (ctx) => {
   });
   return (await Promise.all(probes)).filter((r): r is CheckResult => r !== undefined);
 };
+
+/**
+ * The models of an openai-compatible provider (GET <baseUrl>/models), M-020: a local Ollama with nothing pulled is a
+ * WARN "no models" (brief section 12), an unreachable endpoint a WARN; a provider whose key file is missing is left to
+ * its key line. The key is sent as a bearer header and never printed.
+ */
+async function openAiModels(ctx: Ctx, p: Provider, name: string): Promise<CheckResult | undefined> {
+  if (!p.enabled) return ok(name, 'disabled in providers.json; not probed');
+  const base = (p.baseUrl ?? '').replace(/\/+$/, '');
+  if (base === '') return warn(name, 'no baseUrl in providers.json', `set baseUrl of ${p.name}`);
+  let key: string | undefined;
+  if (p.keyFile) {
+    if (keyFileStatus(p.keyFile).state !== 'ok') return undefined;
+    key = readFileSync(p.keyFile, 'utf8').trim();
+  }
+  const configured = p.models.map((m) => m.id);
+  try {
+    const res = await ctx.deps.fetch(`${base}/models`, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return warn(name, `GET ${base}/models answered ${res.status}`, `check ${p.name} in providers.json or set enabled false`);
+    const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === 'string');
+    const pull = p.name === 'ollama' || /:11434\b/.test(base) ? `ollama pull ${configured[0] ?? '<model>'}` : `change the model ids of ${p.name} to offered ones`;
+    if (ids.length === 0) return warn(name, `${p.name} has no models (${configured.join(', ')} not installed)`, pull);
+    const absent = configured.filter((id) => !ids.includes(id));
+    if (absent.length) return warn(name, `not offered by ${base}: ${absent.join(', ')} (offered: ${ids.slice(0, 8).join(', ')})`, pull);
+    return ok(name, `all ${configured.length} models in providers.json are offered (${ids.length} offered)`);
+  } catch {
+    return warn(name, `${base} is not reachable`, `make sure ${base} is reachable or set enabled false for ${p.name}`);
+  }
+}
 
 const checkJev: Check = async (ctx) => {
   const c = providersOrFail(ctx, 'jev');
@@ -977,7 +1009,8 @@ export function botServiceFile(platform: NodeJS.Platform, home: string): string 
 const checkService: Check = async (ctx) => {
   const file = botServiceFile(ctx.deps.platform, ctx.deps.ownerHome);
   if (file === undefined) return [ok('service', `the bot has service files for macOS and Linux only, not ${ctx.deps.platform}; skipped`)];
-  return [existsSync(file) ? ok('service', `installed (${file})`) : warn('service', `not installed (no ${file})`, 'jv bot install-service')];
+  // Not installed is informational (M-020): the bot runs in the foreground without it, and loading it is the owner's step.
+  return [existsSync(file) ? ok('service', `installed (${file})`) : ok('service', `not installed (no ${file}); jv bot install-service writes it`)];
 };
 
 /**

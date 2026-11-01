@@ -64,6 +64,7 @@ import { isAlive } from './launcher.js';
 import { paths } from './paths.js';
 import { AGENTS_MAX_BYTES, fillPlaceholders, projectInstructions, splitFrontmatter } from './prompt.js';
 import { findProvider, loadProviders, type Provider, type ProvidersConfig } from './providers.js';
+import { memoryApi, memoryBlock } from './memory-port.js';
 import { processCommandLine } from './proc.js';
 import { redact } from './redact.js';
 import { hasOwnClaudeLogin, readSeedsApplied, type SeedRecord } from './seeds.js';
@@ -444,6 +445,14 @@ export interface PromptInput {
   handoff: string;
   /** Folder of the installed skills (default ~/.jv/skills). */
   skillsDir?: string;
+  /** The project's memory brief (jevellan-memory, M-015); the block is left out when it is empty. */
+  memory?: string;
+}
+
+/** The coordinator's memory brief (what the project and the owner's global scope remember), when memory is registered. */
+export function coordinatorMemory(store: Store, project: string): { memory?: string } {
+  const text = memoryApi()?.buildBrief(store.db, { project, title: 'coordinate the project', taskText: 'status, open tasks, the owner\'s standing preferences' }).text;
+  return text ? { memory: text } : {};
 }
 
 /** The coordinator skill body with its placeholders filled, then the handoff. */
@@ -467,7 +476,10 @@ export function coordinatorPromptText(input: PromptInput): string {
   const instructions = agents
     ? `${PROJECT_INSTRUCTIONS_HEADING}\n\nThe project's own instructions, from ${join(input.project.path, 'AGENTS.md')} (at most ${AGENTS_MAX_BYTES / 1024} KiB). They bind the tasks' workers; for you they describe the project.\n\n${redact(agents)}\n\n`
     : '';
-  return `${body}\n\n${instructions}# ${HANDOFF_PREFIX.replace(/:$/, '')}\n\n${input.handoff.trim()}\n`;
+  // Brief section 3: the coordinator prompt carries the memory block too, after the project block, at start and restart.
+  const remembered = memoryBlock(input.memory);
+  const memorySection = remembered ? `${remembered}\n\n` : '';
+  return `${body}\n\n${instructions}${memorySection}# ${HANDOFF_PREFIX.replace(/:$/, '')}\n\n${input.handoff.trim()}\n`;
 }
 
 function writeFileAtomic(file: string, content: string, mode = 0o600): void {
@@ -782,7 +794,7 @@ export async function startCoordinator(store: Store, projectName: string, deps: 
   const promptFile = paths.coordinatorPrompt(project.name);
   writeFileAtomic(
     promptFile,
-    coordinatorPromptText({ project, handoff, ...(deps.skillsDir ? { skillsDir: deps.skillsDir } : {}) }),
+    coordinatorPromptText({ project, handoff, ...(deps.skillsDir ? { skillsDir: deps.skillsDir } : {}), ...coordinatorMemory(store, project.name) }),
   );
 
   const uuid = randomUUID();

@@ -386,13 +386,12 @@ describe('ports: 7071 to 7073 free or held by jv', () => {
 });
 
 describe('service: the bot service file under the owner home', () => {
-  test('macOS: the LaunchAgents plist, WARN until jv bot install-service wrote it', async () => {
+  test('macOS: the LaunchAgents plist; not installed is informational (OK) until jv bot install-service writes it (M-020)', async () => {
     const plist = join(ownerHome, 'Library', 'LaunchAgents', 'dev.jevellan.bot.plist');
     assert.equal(D.botServiceFile('darwin', ownerHome), plist);
     const [missing] = await D.runChecks(['service'], deps());
-    assert.equal(missing!.status, 'WARN');
-    assert.equal(missing!.detail, `not installed (no ${plist})`);
-    assert.equal(missing!.fix, 'jv bot install-service');
+    assert.equal(missing!.status, 'OK');
+    assert.equal(missing!.detail, `not installed (no ${plist}); jv bot install-service writes it`);
     mkdirSync(join(ownerHome, 'Library', 'LaunchAgents'), { recursive: true });
     writeFileSync(plist, '<plist/>\n');
     try {
@@ -408,7 +407,7 @@ describe('service: the bot service file under the owner home', () => {
     const unit = join(ownerHome, '.config', 'systemd', 'user', 'jevellan-bot.service');
     assert.equal(D.botServiceFile('linux', ownerHome), unit);
     const [missing] = await D.runChecks(['service'], deps({ platform: 'linux' }));
-    assert.equal(missing!.detail, `not installed (no ${unit})`);
+    assert.equal(missing!.detail, `not installed (no ${unit}); jv bot install-service writes it`);
     mkdirSync(join(ownerHome, '.config', 'systemd', 'user'), { recursive: true });
     writeFileSync(unit, '[Service]\n');
     assert.equal((await D.runChecks(['service'], deps({ platform: 'linux' })))[0]!.status, 'OK');

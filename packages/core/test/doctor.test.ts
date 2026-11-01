@@ -219,8 +219,8 @@ describe('jv doctor', () => {
     assert.equal(m.get('ports:ui')!.detail, 'port 7071 is free');
     assert.equal(m.get('ports:mcp')!.detail, 'port 7072 is free');
     assert.equal(m.get('ports:bot')!.detail, 'port 7073 is free');
-    assert.equal(m.get('service')!.status, 'WARN');
-    assert.equal(m.get('service')!.fix, 'jv bot install-service');
+    assert.equal(m.get('service')!.status, 'OK', 'not installed is informational (M-020)');
+    assert.match(m.get('service')!.detail, /jv bot install-service writes it$/);
     assert.equal(m.get('member')!.status, 'OK');
     assert.equal(m.get('member')!.detail, 'Jevellan member running (pid 79678); jv leaves it alone');
     // jv only reads launchd: one `launchctl list`, nothing else.
@@ -313,7 +313,21 @@ describe('jv doctor', () => {
     assert.ok(!f!.detail.includes(FAKE_TOKEN));
     // claude-second has no token file in this home and no login: still probed, the SDK reports what it can.
     const all = byName(await D.runChecks(['models'], deps()));
-    assert.deepEqual([...all.keys()], ['models:claude-main', 'models:claude-second', 'models:glm']);
+    // M-020: openai-compatible providers are probed too (GET <baseUrl>/models); one without its key file is left to its key line.
+    assert.deepEqual([...all.keys()], ['models:claude-main', 'models:claude-second', 'models:glm', 'models:ollama']);
+  });
+
+  test('openai-compatible models (M-020): an Ollama with nothing pulled is WARN "no models", one that serves them OK, unreachable WARN', async () => {
+    const answer = (body: unknown) =>
+      (async (url: string | URL) => (String(url).endsWith('/v1/models') && String(url).includes('11434') ? new Response(JSON.stringify(body)) : new Response(JSON.stringify(jevModels)))) as typeof fetch;
+    const [empty] = await D.runChecks(['models:ollama'], deps({ fetch: answer({ object: 'list', data: [] }) }));
+    assert.deepEqual([empty!.status, empty!.detail, empty!.fix], ['WARN', 'ollama has no models (qwen3:8b not installed)', 'ollama pull qwen3:8b']);
+    const [served] = await D.runChecks(['models:ollama'], deps({ fetch: answer({ data: [{ id: 'qwen3:8b' }, { id: 'llama3' }] }) }));
+    assert.equal(served!.status, 'OK');
+    const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+    const [unreachable] = await D.runChecks(['models:ollama'], deps({ fetch: down }));
+    assert.equal(unreachable!.status, 'WARN');
+    assert.match(unreachable!.detail, /is not reachable$/);
   });
 
   test('a login state that cannot be recorded is still shown, as WARN', async () => {
