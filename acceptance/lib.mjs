@@ -625,7 +625,7 @@ export function leakCheck(targets, { secretsDir = join(REAL_JV_HOME, 'secrets'),
   const leaks = [];
   const errors = [];
   const sets = secretFiles(secretsDir).map((f) => ({ label: basename(f), patterns: secretPatterns(f) }));
-  for (const l of literals) sets.push({ label: `literal:${l}`, patterns: [l] });
+  literals.forEach((l, i) => sets.push({ label: `literal ${i + 1}`, patterns: [l] }));
   if (checked.length) {
     for (const s of sets) {
       if (!s.patterns.length) continue;
@@ -634,7 +634,7 @@ export function leakCheck(targets, { secretsDir = join(REAL_JV_HOME, 'secrets'),
       if (r.error) errors.push(`${s.label}: ${r.error}`);
     }
   }
-  return { secrets: sets.filter((s) => !s.label.startsWith('literal:')).length, checked, leaks, errors };
+  return { secrets: sets.filter((s) => !s.label.startsWith('literal ')).length, checked, leaks, errors };
 }
 
 // ---- ports, long-running jv commands ------------------------------------------------------------------------
