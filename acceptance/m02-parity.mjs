@@ -117,7 +117,12 @@ function compareKeys(label, skillsJson, thisJson) {
   const added = [...t.keys].filter((k) => !s.keys.has(k)).sort();
   const known = KNOWN_ADDITIONS[label] ?? {};
   for (const k of missing) note(`DIFF ${label} --json: "${k}" only in the skills runtime; reason: ${PLACEHOLDER}`);
-  for (const k of added) note(`DIFF ${label} --json: "${k}" only in this jv; reason: ${known[k] ?? PLACEHOLDER}`);
+  // A key under an added parent (bot.limits.total under bot) has its parent's reason.
+  const reasonOf = (k) => {
+    for (let p = k; p !== ''; p = p.includes('.') ? p.slice(0, p.lastIndexOf('.')) : '') if (known[p]) return known[p];
+    return PLACEHOLDER;
+  };
+  for (const k of added) note(`DIFF ${label} --json: "${k}" only in this jv; reason: ${reasonOf(k)}`);
   const emptyBoth = [...s.emptyArrays].filter((p) => !s.filledArrays.has(p) && !t.filledArrays.has(p));
   if (emptyBoth.length) note(`${label} --json: arrays empty in both outputs, element keys not compared: ${emptyBoth.join(', ')}`);
   const values = valueDiffs(skillsJson, thisJson);

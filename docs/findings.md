@@ -110,3 +110,35 @@ Checked with `sw_vers`, `uname -m`, `df -h /`, `--version` of each tool, `lsof -
 - `jv project add ~/jevellan-projects/jv-mono-sandbox --name jv-mono-sandbox` registered P0485KS; its project.json
   then got M-004's commands. `jv doctor` in the sandbox: every line OK except WARN for the three providers without
   key files; `store: schema 2`.
+
+## 2026-11-01 Phase 1: journeys M1 to M3 and what they showed
+
+- M1 (`node acceptance/m01-install.mjs --real`, 10 s): `npm ci` (5 s from npm's cache) and `npm run build` at the
+  checkout, `jv bootstrap --skills ~/dev/jevellan-skills` on the real `~/.jv` (nothing copied: unchanged), `jv
+  --version` prints `jevellan 0.1.0 (store schema 2, skills 0.1.0)`, the shim execs
+  `~/.nvm/versions/node/v22.22.0/bin/node --disable-warning=ExperimentalWarning <checkout>/packages/cli/dist/bin.js`,
+  `jv doctor` has 33 OK and 5 WARN lines, every WARN an allowed one (the key files of glm, deepseek and kimi, glm's
+  login, and `models:ollama: ollama has no models (qwen3:8b not installed)`).
+- M2 (9 s): the `--help` of all 16 commands of the skills runtime's own table compared with this jv's: identical
+  except `jv status` (`--watch`), `jv task` (list, changes) and `jv coordinator` (message), each keeping every flag
+  and subcommand of the skills runtime. On one store, every key of `jv status --json` (51), `jv task show --json` (95)
+  and `jv report --json` (24) of the skills runtime is in this jv's output; this jv adds `bot` to status and `origin`
+  to task show.
+- M3 (`--real`, 20 s): the skills runtime, bootstrapped in a temporary JV_HOME, ran a `single` answer task to done
+  (Jev placed it on `claude-haiku-5-5` low, claude-main, llm); this jv opened that store, migrated it to schema 2 with
+  `store.sqlite.v1.bak` (schema 1, the task in it) and lists the same task. The skills runtime then refuses the
+  migrated store with exit 2 "store schema version 2 does not match this runtime (1); run jv update", and the store
+  is unharmed. So the skills repository's jv and this jv cannot share one `~/.jv` until the reconciliation of brief
+  section 15 (the README says so). No key file value appeared in the store, its WAL, the backup or the logs.
+- In a temporary home with no token file and no `.credentials.json`, `models:claude-main` still answered OK ("4
+  offered") while `login:claude-main` said "needs login": the agent SDK's `supportedModels()` lists models without a
+  jv login (either its built-in list or the macOS Keychain login of the owner's own Claude Code). The login line is
+  the one that tells whether a provider can run.
+- `npm audit` reports 11 moderate findings, all in the lint toolchain's dependencies (`minimatch` under
+  `@eslint/eslintrc` and `@typescript-eslint/typescript-estree`); nothing that ships at run time.
+- A2UI: `@a2ui/web_core` 0.14.0's `MessageProcessor` accepts v0.8, v0.9 and v1.0 messages through version adapters
+  (`ProcessableMessage = V08ServerToClientMessage | V09A2uiMessage | V10AgentToRendererMessage`), so `version: "1.0"`
+  messages are expected to render; phase 4 checks it in the browser. `@a2ui/react` 0.14.0 peer-depends on
+  `zod@^3.25.76`, `@a2ui/web_core` depends on it.
+- The MCP SDK 1.32.2 declares `zod` `^3.25 || ^4.0` as a peer and its `registerTool` takes zod 4 object schemas
+  (`AnySchema` in `server/zod-compat`); phase 3 verifies it with a client.
