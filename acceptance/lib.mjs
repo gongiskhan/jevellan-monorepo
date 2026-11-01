@@ -878,3 +878,37 @@ export async function waitForTask(home, taskId, states, { timeoutMs = 15 * 60_00
   );
   return last;
 }
+
+// ---- the UI (M4, M6, M7, M8, M15) --------------------------------------------------------------------------------
+
+/**
+ * Starts `jv ui --port <free> [--bind B] --json` on `home` and returns {child, url, password}. The password is the
+ * content of <home>/ui-password, which the first start writes (mode 600); it is read from the file, never printed.
+ */
+export async function startUi(home, { bind = '127.0.0.1', readonly = false, env = {} } = {}) {
+  const port = await freePort(bind === 'localhost' ? '127.0.0.1' : bind);
+  const args = ['ui', '--port', String(port), '--bind', bind, '--json', ...(readonly ? ['--readonly'] : [])];
+  const started = await startJv(args, { home, env, ready: (out) => firstJsonObject(out), timeoutMs: 60_000 });
+  const info = started.value;
+  const url = info.url ?? `http://${bind}:${port}`;
+  const password = readFileSync(join(home, 'ui-password'), 'utf8').trim();
+  return { child: started.child, url: url.replace(/\/$/, ''), password, info };
+}
+
+/** A headless Chromium page signed in to a running jv ui. Close `browser` when done. */
+export async function uiPage(ui, { width = 1280, height = 800, colorScheme = 'light' } = {}) {
+  const { pw } = loadPlaywright();
+  const browser = await pw.chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme });
+  const page = await context.newPage();
+  await page.goto(`${ui.url}/login`);
+  await page.locator('input[type="password"]').fill(ui.password);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 20_000 });
+  return { browser, context, page };
+}
+
+/** Whether the page scrolls sideways (the visual rule of section 7: none at 390 px). */
+export async function hasHorizontalScroll(page) {
+  return page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+}
