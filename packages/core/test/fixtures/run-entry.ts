@@ -1,12 +1,14 @@
 // The jv entry for detached processes in the core tests (launcher, runs, jv exec). jevellan-core cannot import the
 // command layer (jevellan-cli depends on it, not the other way round), so this entry dispatches the two internal
-// commands core starts itself: `run <R>` / `run --session R` and `exec --session R | --provider P [...] -- cmd`.
+// commands core starts itself: `run <R>` / `run --session R`, `exec --session R | --provider P [...] -- cmd` and
+// `worker-mcp --session R` (the stdio worker server, M-015).
 // Every core test that spawns a process sets JV_CLI_ENTRY to this file (jvEntry(), M-007).
 
 import { executeRun } from '../../src/run.js';
 import { planExec, runExec } from '../../src/exec.js';
 import { normalizeId } from '../../src/ids.js';
 import { openStore } from '../../src/store.js';
+import { argSession, serve } from '../../src/report-mcp.js';
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -45,6 +47,12 @@ async function main(argv: string[]): Promise<number> {
       store.close();
     }
     return runExec(plan);
+  }
+  if (command === 'worker-mcp') {
+    const sessionId = argSession(argv.slice(1));
+    if (!sessionId) return 2;
+    await serve({ sessionId, log: (t) => process.stderr.write(`jv-worker-mcp: ${t}\n`) });
+    return 0;
   }
   process.stderr.write(`core test entry: unknown command ${String(command)}\n`);
   return 2;

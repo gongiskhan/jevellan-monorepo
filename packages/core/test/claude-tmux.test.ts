@@ -387,7 +387,7 @@ test('read-only duties: dontAsk with the read-only tools, the report tool and pr
   const tools = args.slice(args.indexOf('--tools') + 1, args.indexOf('--allowedTools'));
   assert.deepEqual(tools, ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch', 'Write']);
   const allowed = args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--session-id'));
-  assert.deepEqual(allowed, ['mcp__jv__jv_report', 'WebSearch', 'WebFetch', 'Write', 'mcp__pw']);
+  assert.deepEqual(allowed, ['mcp__jv__jv_report', 'mcp__jv__jv_remember', 'mcp__jv__jv_recall', 'WebSearch', 'WebFetch', 'Write', 'mcp__pw']);
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
 });
 

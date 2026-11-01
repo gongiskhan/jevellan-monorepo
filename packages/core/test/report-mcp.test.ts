@@ -88,7 +88,8 @@ test('the spec starts the bootstrap node with the compiled server, the session a
   const spec = reportMcpServerSpec('R123456');
   assert.equal(spec.type, 'stdio');
   assert.deepEqual(spec.args.slice(-2), ['--session', 'R123456']);
-  assert.ok(spec.args.some((a) => a.endsWith('/packages/core/dist/report-mcp.js')), 'the compiled server of this jevellan-core (M-007)');
+  assert.deepEqual(spec.args.slice(1, 3), [process.env.JV_CLI_ENTRY, 'worker-mcp'], 'the jv entry serves it, with memory registered (M-015)');
+  assert.ok(reportMcpServerSpec('R123456', { script: '/x/report-mcp.js' }).args.includes('/x/report-mcp.js'));
   assert.equal(spec.env.JV_HOME, home);
 });
 
@@ -100,11 +101,11 @@ test('initialize, tools/list, ping, notifications and errors over stdio', async 
     const r = init.result as { protocolVersion: string; capabilities: { tools: unknown }; serverInfo: { name: string } };
     assert.equal(r.protocolVersion, '2025-03-26');
     assert.ok(r.capabilities.tools);
-    assert.equal(r.serverInfo.name, 'jv-report-mcp');
+    assert.equal(r.serverInfo.name, 'jv-worker-mcp');
     c.send(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
     assert.deepEqual((await c.request('ping')).result, {});
     const list = (await c.request('tools/list')).result as { tools: Array<{ name: string; description: string; inputSchema: { type: string; required: string[] } }> };
-    assert.equal(list.tools.length, 1);
+    assert.deepEqual(list.tools.map((t: { name: string }) => t.name), ['jv_report', 'jv_remember', 'jv_recall']);
     assert.equal(list.tools[0]!.name, 'jv_report');
     assert.equal(list.tools[0]!.inputSchema.type, 'object');
     assert.deepEqual(list.tools[0]!.inputSchema.required.sort(), ['status', 'summary']);

@@ -36,7 +36,8 @@ import { processGroup, stopRun } from '../launcher.js';
 import { paths, providerHomeProblem } from '../paths.js';
 import { NO_REPORT_PROMPT } from '../prompt.js';
 import { defaultRedactor, type Redactor } from '../redact.js';
-import { REPORT_SERVER_NAME, REPORT_TOOL_QUALIFIED, synthesizeReport } from '../report.js';
+import { REPORT_SERVER_NAME, synthesizeReport } from '../report.js';
+import { WORKER_TOOLS_QUALIFIED } from '../tools/index.js';
 import { openStore, type Store } from '../store.js';
 import {
   claudeTranscriptPath,
@@ -362,7 +363,7 @@ export function claudeArgs(i: ClaudeArgsInput): string[] {
           ...READ_ONLY_TOOLS,
           ...writes,
           '--allowedTools',
-          REPORT_TOOL_QUALIFIED,
+          ...WORKER_TOOLS_QUALIFIED,
           'WebSearch',
           'WebFetch',
           ...writes,

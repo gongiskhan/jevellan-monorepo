@@ -22,6 +22,7 @@ import { recordEvent } from './events.js';
 import { runWorktreeSetup } from './git.js';
 import { processGroup, runMessage } from './launcher.js';
 import { paths } from './paths.js';
+import { memoryApi, memoryBlock } from './memory-port.js';
 import { buildSystemAppend, CONTINUE_PROMPT, resumeMessage, START_PROMPT } from './prompt.js';
 import { findProvider, loadProviders, type ProvidersConfig } from './providers.js';
 import { redact } from './redact.js';
@@ -40,6 +41,8 @@ export interface PreparedRun {
   turn: TurnInput;
   /** Messages of the task this turn delivers. */
   messages: MessageRow[];
+  /** The memory block of the prompt and the memories in it, when there is one (M-015). */
+  memory?: { block: string; ids: string[] };
 }
 
 export interface PrepareOptions {
@@ -110,6 +113,8 @@ export async function prepareRun(sessionId: string, options: PrepareOptions = {}
     if (!provider) throw refused(`no provider ${session.provider} in ${providers.file}`);
     const env = minimalEnvironment({ provider, sessionId: session.id, ...(options.env ? { base: options.env } : {}) });
 
+    // The memory brief of the task (brief sections 3 and 6), when jevellan-memory is registered in this process.
+    const memory = memoryApi()?.buildBrief(store.db, { project: project.name, title: task.title, taskText: task.task_text, duty: step.duty });
     const prompt = buildSystemAppend({
       project,
       task,
@@ -120,6 +125,7 @@ export async function prepareRun(sessionId: string, options: PrepareOptions = {}
       base,
       ...(options.skillsDir ? { skillsDir: options.skillsDir } : {}),
       ...(options.rulesFile ? { rulesFile: options.rulesFile } : {}),
+      ...(memory && memory.text ? { memory: memory.text } : {}),
     });
 
     const messages = store.listMessages({ task_id: task.id, undelivered: true });
@@ -142,7 +148,7 @@ export async function prepareRun(sessionId: string, options: PrepareOptions = {}
         : { mode: 'write' },
       mcp: { servers: projectMcpServers(project.name), report: reportMcpServerSpec(session.id) },
     };
-    return { session, resume, prompt: text, turn, messages };
+    return { session, resume, prompt: text, turn, messages, ...(memory && memory.text ? { memory: { block: memoryBlock(memory.text)!, ids: memory.ids } } : {}) };
   } finally {
     if (!options.store) store.close();
   }
@@ -225,6 +231,8 @@ export async function executeRun(sessionId: string, deps: RunDeps = {}): Promise
         effort: prepared.session.effort,
         cwd: prepared.session.cwd,
         resume: prepared.resume,
+        // The memory block the prompt carries and the memories in it (M-015), for the owner and M10.
+        ...(prepared.memory ? { memory: prepared.memory } : {}),
       });
       if (prepared.messages.length) {
         recordEvent(store, sessionId, 'message', {

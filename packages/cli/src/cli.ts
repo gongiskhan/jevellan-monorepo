@@ -7,6 +7,7 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { CommandIo, CommandModule, FlagValue, ParsedArgs } from './command.js';
+import './setup.js';
 import { EXIT, JvError, refused } from 'jevellan-core/errors';
 
 export interface CommandEntry {
@@ -58,11 +59,16 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
   evals: { module: './commands/evals.js', usage: 'jv evals route|landing [--since DATE]' },
   usage: { module: './commands/usage.js', usage: 'jv usage [--week W]' },
   gc: { module: './commands/gc.js', booleans: ['dry-run'], usage: 'jv gc [--project N] [--dry-run]' },
+  memory: {
+    module: './commands/memory.js',
+    usage: 'jv memory add|search|list|archive|export  (add: --scope global|project [--project N] --kind K [--tag t]... "text")',
+  },
   version: { module: './commands/version.js', usage: 'jv --version', internal: true },
 
   bootstrap: { module: './commands/bootstrap.js', usage: 'jv bootstrap [--skills PATH] [--node PATH]', internal: true },
   update: { module: './commands/bootstrap.js', usage: 'jv update', internal: true },
   run: { module: './commands/run.js', usage: 'jv run --session R', internal: true, booleans: ['detach'] },
+  'worker-mcp': { module: './commands/worker-mcp.js', usage: 'jv worker-mcp --session R', internal: true },
   exec: {
     module: './commands/exec.js',
     usage: 'jv exec --session R | --provider P [--home-login] -- <command...>',

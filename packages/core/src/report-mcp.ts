@@ -1,9 +1,11 @@
-// jv-report-mcp: the stdio MCP server of the report tool for claude-tmux and Codex sessions (section 5).
+// jv-worker-mcp (alias jv-report-mcp): the stdio MCP server of the worker tools for claude-tmux and Codex sessions
+// (skills brief section 5, monorepo brief section 3): jv_report, jv_remember and jv_recall (tools/index.ts).
 //
-// Started by the session's MCP config as "node <JV_HOME>/runtime/dist/report-mcp.js --session R" (reportMcpServerSpec
-// gives the bootstrap Node by absolute path and JV_HOME in the server's environment). Hand-rolled JSON-RPC 2.0 over
-// newline-delimited stdio, no dependency: initialize, notifications/initialized, ping, tools/list and tools/call, one
-// tool jv_report whose inputSchema is zod's toJSONSchema of the report fields.
+// Started by the session's MCP config as "<bootstrap node> <jv entry> worker-mcp --session R" (reportMcpServerSpec,
+// M-015): the jv CLI registers jevellan-memory before it serves, so the memory tools work; this file run directly
+// (the package's jv-worker-mcp and jv-report-mcp bins) serves the same tools, with memory answering that it is not
+// available. Hand-rolled JSON-RPC 2.0 over newline-delimited stdio, no dependency: initialize,
+// notifications/initialized, ping, tools/list and tools/call; inputSchemas are zod's toJSONSchema.
 //
 // A claude-tmux or Codex conversation keeps one MCP process across turns while every turn is its own session row
 // (D-006), so each call writes to the newest row sharing the given row's native_session_id that has no report yet
@@ -13,37 +15,38 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
-import { bootstrapNode } from './env.js';
 import { paths, RUNTIME_ROOT } from './paths.js';
 import { redact } from './redact.js';
-import {
-  REPORT_TOOL_DESCRIPTION,
-  REPORT_TOOL_NAME,
-  reportInputJsonSchema,
-  resolveReportSession,
-  writeReport,
-} from './report.js';
+import { bootstrapNode, jvEntry } from './env.js';
 import { openStore, type Store } from './store.js';
+import { workerTools } from './tools/index.js';
 
-export const SERVER_NAME = 'jv-report-mcp';
+export const SERVER_NAME = 'jv-worker-mcp';
 export const SERVER_VERSION = '0.1.0';
 /** Protocol version answered when the client asks for none. */
 export const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 
-/** The MCP config entry of the stdio report server for one session. */
+/**
+ * The MCP config entry of the stdio worker server for one session: `<node> <jv entry> worker-mcp --session R`
+ * (M-015). `script` runs this file directly instead (the bins; tests).
+ */
 export function reportMcpServerSpec(sessionId: string, options: { node?: string; script?: string } = {}): {
   type: 'stdio';
   command: string;
   args: string[];
   env: Record<string, string>;
 } {
+  const target = options.script !== undefined ? [options.script] : [jvEntry(), 'worker-mcp'];
   return {
     type: 'stdio',
     command: options.node ?? bootstrapNode(),
-    args: ['--disable-warning=ExperimentalWarning', options.script ?? join(RUNTIME_ROOT, 'dist', 'report-mcp.js'), '--session', sessionId],
+    args: ['--disable-warning=ExperimentalWarning', ...target, '--session', sessionId],
     env: { JV_HOME: paths.home },
   };
 }
+
+/** The compiled file of this server in jevellan-core (what the jv-worker-mcp and jv-report-mcp bins run). */
+export const WORKER_MCP_SCRIPT = join(RUNTIME_ROOT, 'dist', 'report-mcp.js');
 
 type Id = string | number | null;
 
@@ -99,22 +102,22 @@ export function handleMessage(line: string, options: ServerOptions): string | un
       return result(id, {});
     case 'tools/list':
       return result(id, {
-        tools: [{ name: REPORT_TOOL_NAME, description: REPORT_TOOL_DESCRIPTION, inputSchema: reportInputJsonSchema() }],
+        tools: workerTools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema() })),
       });
     case 'tools/call': {
       const name = params.name;
-      if (name !== REPORT_TOOL_NAME) return error(id, -32602, `Unknown tool: ${String(name)}`);
+      const tool = workerTools.find((t) => t.name === name);
+      if (!tool) return error(id, -32602, `Unknown tool: ${String(name)}`);
       const args = params.arguments ?? {};
       let store: Store | undefined;
       try {
         store = (options.openStore ?? (() => openStore()))();
-        const target = resolveReportSession(store, options.sessionId);
-        const r = writeReport(store, target.id, args);
-        return result(id, { content: [{ type: 'text', text: r.text }], isError: r.outcome === 'invalid' });
+        const r = tool.run(store, options.sessionId, args);
+        return result(id, { content: [{ type: 'text', text: r.text }], isError: r.isError });
       } catch (e) {
         const message = redact(e instanceof Error ? e.message : String(e));
-        options.log?.(`jv_report failed: ${message}`);
-        return result(id, { content: [{ type: 'text', text: `The report could not be recorded: ${message}` }], isError: true });
+        options.log?.(`${tool.name} failed: ${message}`);
+        return result(id, { content: [{ type: 'text', text: `${tool.name} failed: ${message}` }], isError: true });
       } finally {
         store?.close();
       }
@@ -136,7 +139,7 @@ export function serve(options: ServerOptions): Promise<void> {
   return new Promise((resolve) => rl.on('close', () => resolve()));
 }
 
-function argSession(argv: readonly string[]): string | undefined {
+export function argSession(argv: readonly string[]): string | undefined {
   const i = argv.indexOf('--session');
   if (i >= 0) return argv[i + 1];
   const eq = argv.find((a) => a.startsWith('--session='));

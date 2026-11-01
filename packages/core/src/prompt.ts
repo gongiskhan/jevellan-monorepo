@@ -19,6 +19,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { notFound, refused } from './errors.js';
+import { memoryBlock } from './memory-port.js';
 import { paths, RUNTIME_ROOT } from './paths.js';
 import { LLM_DUTIES } from './route.js';
 import type { MessageDirection, ProjectRow, ReportRow, StepRow, TaskRow } from './types.js';
@@ -334,6 +335,8 @@ export interface SystemAppendInput {
   rulesFile?: string;
   /** Default: projectSettings(project.name). */
   settings?: ProjectSettings;
+  /** The memory brief of the task (jevellan-memory's brief(), M-015); no block when empty or absent. */
+  memory?: string;
 }
 
 export interface WorkerPrompt {
@@ -379,7 +382,9 @@ export function buildSystemAppend(input: SystemAppendInput): WorkerPrompt {
   });
   // The worktree's copy is the one of the task's branch; the checkout's when the cwd has none.
   const agents = projectInstructions(input.cwd) ?? projectInstructions(input.project.path);
-  const systemAppend = [rules, duty.body, agents, block].filter((p): p is string => p !== undefined && p.trim() !== '').join('\n\n');
+  // Brief section 3: the memory block goes after the project instructions and before the task block.
+  const memory = memoryBlock(input.memory);
+  const systemAppend = [rules, duty.body, agents, memory, block].filter((p): p is string => p !== undefined && p.trim() !== '').join('\n\n');
   return { systemAppend, duty, readOnly: isReadOnly(duty.needs) };
 }
 

@@ -12,6 +12,12 @@
 //
 // writeReport inserts the reports row once per session row: a second call returns REPORT_ALREADY_SENT and changes
 // nothing (Jevellan's REPORT_ALREADY_SENT). Every string is redacted before it is stored.
+//
+// The monorepo adds one optional field (brief section 3): `ui`, an array of A2UI messages the step attaches for the
+// owner (a form, a table of choices, images with captions), each an object with `version` "v0.9" or "1.0" and exactly
+// one of createSurface, updateComponents, updateDataModel, deleteSurface, at most 65536 characters serialised. It is
+// checked apart from the rest: invalid `ui` is dropped with "ui dropped: <reason>" appended to limitations and the
+// report is still recorded (reports.ui_json, schema 2).
 
 import { z } from 'zod';
 import { recordEvent } from './events.js';
@@ -84,7 +90,50 @@ export const ReportFieldsSchema = z.strictObject({
   screenshots: z.array(ScreenshotSchema).max(50).default([]),
   limitations: z.string().max(4000).optional(),
   ownerCommands: z.array(OwnerCommandSchema).max(5).optional(),
+  ui: z
+    .array(z.unknown())
+    .optional()
+    .describe(
+      'Optional A2UI messages for what buttons cannot show (a form, a table of choices, images with captions). Each is an ' +
+        'object with version "v0.9" and exactly one of createSurface, updateComponents, updateDataModel, deleteSurface; ' +
+        'at most 65536 characters in all. A Button whose action name is "answer" with context.label answers the question.',
+    ),
 });
+
+/** The A2UI agent messages a report's ui may carry (A2UI v0.9 and the 1.0 specification name the same four). */
+export const A2UI_MESSAGE_KEYS = ['createSurface', 'updateComponents', 'updateDataModel', 'deleteSurface'] as const;
+export const A2UI_VERSIONS = ['v0.9', '1.0'] as const;
+export const UI_MAX_CHARS = 65536;
+
+/** One A2UI message as a report carries it. */
+export const A2uiMessageSchema = z
+  .object({
+    version: z.enum(A2UI_VERSIONS),
+    createSurface: z.record(z.string(), z.unknown()).optional(),
+    updateComponents: z.record(z.string(), z.unknown()).optional(),
+    updateDataModel: z.record(z.string(), z.unknown()).optional(),
+    deleteSurface: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+  .refine((m) => A2UI_MESSAGE_KEYS.filter((k) => m[k] !== undefined).length === 1, {
+    message: 'each message needs exactly one of createSurface, updateComponents, updateDataModel, deleteSurface',
+  });
+export type A2uiMessage = z.output<typeof A2uiMessageSchema>;
+
+/** Checks a report's ui array: the messages, or why it is dropped. */
+export function checkUi(ui: unknown): { ok: true; messages: A2uiMessage[] } | { ok: false; reason: string } {
+  if (!Array.isArray(ui)) return { ok: false, reason: 'ui is not an array' };
+  if (ui.length === 0) return { ok: false, reason: 'ui is empty' };
+  const size = JSON.stringify(ui).length;
+  if (size > UI_MAX_CHARS) return { ok: false, reason: `ui is ${size} characters, more than ${UI_MAX_CHARS}` };
+  const messages: A2uiMessage[] = [];
+  for (const [i, m] of ui.entries()) {
+    const r = A2uiMessageSchema.safeParse(m);
+    if (!r.success) return { ok: false, reason: `message ${i + 1}: ${r.error.issues[0]?.message ?? 'invalid'}` };
+    messages.push(r.data);
+  }
+  return { ok: true, messages };
+}
 
 export type Report = z.output<typeof ReportFieldsSchema>;
 export type ReportInput = z.input<typeof ReportFieldsSchema>;
@@ -103,7 +152,7 @@ function issuesText(error: z.ZodError): string {
     .join('; ');
 }
 
-export type ParsedReport = { ok: true; report: Report } | { ok: false; error: string };
+export type ParsedReport = { ok: true; report: Report; uiDropped?: string } | { ok: false; error: string };
 
 /** Validates a report as the worker sent it: the schema, then the needs-decision rule. */
 export function parseReport(input: unknown): ParsedReport {
@@ -113,6 +162,14 @@ export function parseReport(input: unknown): ParsedReport {
   if (report.status === 'needs-decision') {
     if (!report.question || report.question.trim() === '') return { ok: false, error: `The report is not valid: question: ${NEEDS_DECISION_QUESTION}` };
     if (!report.options || report.options.length < 2) return { ok: false, error: `The report is not valid: options: ${NEEDS_DECISION_OPTIONS}` };
+  }
+  if (report.ui !== undefined) {
+    const ui = checkUi(report.ui);
+    if (!ui.ok) {
+      const { ui: _dropped, ...rest } = report;
+      return { ok: true, report: rest as Report, uiDropped: ui.reason };
+    }
+    return { ok: true, report: { ...report, ui: ui.messages } };
   }
   return { ok: true, report };
 }
@@ -168,6 +225,7 @@ export function writeReport(store: Store, sessionId: string, input: unknown, opt
   const r = redactor.redactValue(parsed.report);
   let limitations = r.limitations ?? null;
   if (options.synthesized) limitations = limitations ? `${options.synthesized} ${limitations}` : options.synthesized;
+  if (parsed.uiDropped) limitations = limitations ? `${limitations} ui dropped: ${parsed.uiDropped}` : `ui dropped: ${parsed.uiDropped}`;
   return store.tx(() => {
     const existing = store.getReportBySession(sessionId);
     if (existing) return { outcome: 'already-sent' as const, text: REPORT_ALREADY_SENT, row: existing, sessionId };
@@ -185,6 +243,7 @@ export function writeReport(store: Store, sessionId: string, input: unknown, opt
       screenshots_json: JSON.stringify(r.screenshots),
       limitations: limitations === null ? null : cut(limitations, 4000),
       owner_commands_json: r.ownerCommands ? JSON.stringify(r.ownerCommands) : null,
+      ui_json: r.ui ? JSON.stringify(r.ui) : null,
     });
     recordEvent(store, sessionId, 'report', { reportId: created.row.id, ...reportView(created.row) }, { redactor });
     return { outcome: 'recorded' as const, text: REPORT_RECORDED, row: created.row, sessionId };
@@ -223,6 +282,8 @@ export interface ReportView {
   screenshots: Array<{ path: string; caption: string }>;
   limitations?: string;
   ownerCommands?: Array<{ command: string; cwd: string; why: string }>;
+  /** The A2UI messages the step attached (schema 2). */
+  ui?: unknown[];
   createdAt: string;
 }
 
@@ -253,6 +314,7 @@ export function reportView(row: ReportRow): ReportView {
     screenshots: parseJson<ReportView['screenshots']>(row.screenshots_json, []),
     ...(row.limitations !== null ? { limitations: row.limitations } : {}),
     ...(ownerCommands ? { ownerCommands } : {}),
+    ...(row.ui_json ? { ui: parseJson<unknown[]>(row.ui_json, []) } : {}),
     createdAt: row.created_at,
   };
 }

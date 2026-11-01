@@ -28,11 +28,21 @@ import {
   REPORT_SERVER_NAME,
   REPORT_TOOL_DESCRIPTION,
   REPORT_TOOL_NAME,
-  REPORT_TOOL_QUALIFIED,
   ReportFieldsSchema,
   synthesizeReport,
   writeReport,
 } from '../report.js';
+import { WORKER_TOOLS_QUALIFIED } from '../tools/index.js';
+import {
+  RECALL_TOOL_DESCRIPTION,
+  RECALL_TOOL_NAME,
+  RecallArgsSchema,
+  recallTool,
+  REMEMBER_TOOL_DESCRIPTION,
+  REMEMBER_TOOL_NAME,
+  RememberArgsSchema,
+  rememberTool,
+} from '../tools/memory-tools.js';
 import { openStore, type Store } from '../store.js';
 import type { EventKind, SessionRow } from '../types.js';
 import { RunFailure, RunStopped, type McpServerSpec, type RuntimeModule, type StartInput, type TurnInput } from './types.js';
@@ -153,21 +163,27 @@ export interface ClaudeSdkDeps {
   stderr?: (text: string) => void;
 }
 
-/** The in-process report server of one session row: one tool, jv_report. */
+/**
+ * The in-process worker server of one session row (server name jv): jv_report, jv_remember and jv_recall (brief
+ * section 3; the memory tools go through the memory port, tools/memory-tools.ts).
+ */
 export function reportServer(store: Store, sessionId: string, deps: ClaudeSdkDeps = {}) {
   const makeTool = deps.tool ?? tool;
   const makeServer = deps.createSdkMcpServer ?? createSdkMcpServer;
+  const reply = (r: { text: string; isError: boolean }) => ({ content: [{ type: 'text' as const, text: r.text }], ...(r.isError ? { isError: true } : {}) });
   const jvReport = makeTool(
     REPORT_TOOL_NAME,
     REPORT_TOOL_DESCRIPTION,
     ReportFieldsSchema.shape,
     async (args) => {
       const r = writeReport(store, sessionId, args, deps.redactor ? { redactor: deps.redactor } : {});
-      return { content: [{ type: 'text' as const, text: r.text }], ...(r.outcome === 'invalid' ? { isError: true } : {}) };
+      return reply({ text: r.text, isError: r.outcome === 'invalid' });
     },
     { alwaysLoad: true },
   );
-  return makeServer({ name: REPORT_SERVER_NAME, version: '0.1.0', tools: [jvReport], alwaysLoad: true });
+  const jvRemember = makeTool(REMEMBER_TOOL_NAME, REMEMBER_TOOL_DESCRIPTION, RememberArgsSchema.shape, async (args) => reply(rememberTool(store, sessionId, args)), { alwaysLoad: true });
+  const jvRecall = makeTool(RECALL_TOOL_NAME, RECALL_TOOL_DESCRIPTION, RecallArgsSchema.shape, async (args) => reply(recallTool(store, sessionId, args)), { alwaysLoad: true });
+  return makeServer({ name: REPORT_SERVER_NAME, version: '0.1.0', tools: [jvReport, jvRemember, jvRecall], alwaysLoad: true });
 }
 
 /** The query() options of section 6.1 for one turn. */
@@ -192,7 +208,7 @@ export function queryOptions(
           permissionMode: 'dontAsk',
           tools: [...READ_ONLY_TOOLS, ...writes],
           allowedTools: [
-            REPORT_TOOL_QUALIFIED,
+            ...WORKER_TOOLS_QUALIFIED,
             'WebSearch',
             'WebFetch',
             ...writes,
