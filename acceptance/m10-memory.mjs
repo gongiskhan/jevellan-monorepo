@@ -4,8 +4,10 @@
 // Part one: a single investigate task whose text says "Remember with jv_remember that the sandbox tests need `npm
 // ci` first (kind environment)" creates the memory; `jv memory search "npm ci"` finds it; the next task's start event
 // carries "What this project remembers:" with that line.
-// Part two: two near-duplicate memories added by hand; `jv job run improve-memory`; the bot ticks until the job ends;
-// one memory is archived with superseded_by set, none deleted, and result_json lists the merge.
+// Part two: two near-duplicate memories added by hand; `jv job run improve-memory`; `jv bot tick` in a loop until the
+// job ends (the first tick gives the job its investigate task, the next ones admit and run it, the one after it is
+// done applies the merge); one memory is archived with superseded_by set, none deleted, and result_json lists the
+// merge. Part two is blocked, with the reason, when this jv has no `jv bot tick`.
 //
 // Usage: node acceptance/m10-memory.mjs [--part one|two|all] [--keep]
 // Exit 0 when every check passes, 1 otherwise. Writes acceptance/results/m10.json (part all only).
@@ -99,8 +101,22 @@ async function partOne(home) {
   return { taskA, taskB, memoryId };
 }
 
+/**
+ * Why `jv bot tick` cannot drive the journey, or undefined when it can: one tick on the temporary home. A jv without
+ * the command (the bot package not built yet) blocks part two instead of letting it wait for a job nothing steps.
+ */
+function botTickBlocked(home) {
+  const r = jv(['bot', 'tick', '--json'], { home, timeoutMs: 300_000 });
+  if (r.code === 0) return undefined;
+  const text = `${r.stdout} ${r.stderr}`;
+  if (/unknown command "bot"|jv bot is not available in this build/.test(text)) return `jv bot tick is not available in this build (${text.trim().slice(0, 200)})`;
+  return `jv bot tick failed (exit ${r.code}): ${text.trim().slice(0, 300)}`;
+}
+
 async function partTwo(home) {
   const add = (text) => jvJson(['memory', 'add', '--scope', 'project', '--project', SANDBOX_NAME, '--kind', 'environment', text], { home });
+  const blocked = botTickBlocked(home);
+  if (blocked) return { blocked: `part two: ${blocked}` };
   let a;
   let b;
   await check('two near-duplicate memories added by hand', () => {
@@ -113,19 +129,24 @@ async function partTwo(home) {
   let jobId;
   await check('jv job run improve-memory creates the job', () => {
     const r = jvJson(['job', 'run', 'improve-memory', '--project', SANDBOX_NAME], { home });
-    jobId = r.json?.job?.id ?? r.json?.id;
-    return { ok: r.code === 0 && /^J[0-9A-Z]{6}$/.test(jobId ?? ''), detail: r.code === 0 ? jobId : r.stderr || r.stdout };
+    jobId = r.json?.job?.id;
+    return { ok: r.code === 0 && r.json?.created === true && /^J[0-9A-Z]{6}$/.test(jobId ?? ''), detail: r.code === 0 ? `${jobId} ${r.json?.job?.state}` : r.stderr || r.stdout };
   });
+  let end;
   await check('the bot ticks the job through its task to done', async () => {
-    const end = await waitFor(
+    end = await waitFor(
       () => {
         jv(['bot', 'tick'], { home, timeoutMs: 300_000 });
-        const j = jvJson(['job', 'show', jobId], { home }).json;
+        const j = jvJson(['job', 'show', jobId], { home }).json?.job;
         return j && (j.state === 'done' || j.state === 'failed') ? j : undefined;
       },
       { timeoutMs: 20 * 60_000, intervalMs: 5000 },
     );
-    return { ok: end?.state === 'done', detail: `${jobId} ${end?.state ?? 'not ended'}: ${end?.reason ?? ''}` };
+    return { ok: end?.state === 'done', detail: `${jobId} ${end?.state ?? 'not ended'}: ${end?.reason ?? ''}; task ${end?.task ?? 'none'}` };
+  });
+  await check('the work was an improver task: single investigate, origin improver:<J>, done', () => {
+    const t = end?.task ? queryOne(storeFile(home), "SELECT t.id, t.kind, t.origin, t.state, s.duty FROM tasks t JOIN steps s ON s.task_id = t.id AND s.ordinal = 1 WHERE t.id = ?", end.task) : undefined;
+    return { ok: t?.kind === 'single' && t.duty === 'investigate' && t.origin === `improver:${jobId}` && t.state === 'done', detail: t ? `${t.id} ${t.kind} ${t.duty} ${t.origin} ${t.state}` : 'no task' };
   });
   await check('one of the two is archived with superseded_by, none deleted, and result_json lists the merge', () => {
     const rows = query(storeFile(home), 'SELECT id, status, superseded_by FROM memories WHERE id IN (?, ?)', a, b);
@@ -135,6 +156,12 @@ async function partTwo(home) {
     const merged = (result.merged ?? []).some((m) => [a, b].includes(m.keep) && m.archived.some((x) => [a, b].includes(x)));
     return { ok: rows.length === 2 && archived.length === 1 && merged, detail: `rows ${rows.map((r) => `${r.id} ${r.status}${r.superseded_by ? ` -> ${r.superseded_by}` : ''}`).join(', ')}; result ${JSON.stringify(result).slice(0, 300)}` };
   });
+  await check('jv memory list shows the archived one with --status archived, and nothing was deleted', () => {
+    const archived = jvJson(['memory', 'list', '--project', SANDBOX_NAME, '--status', 'archived'], { home }).json?.memories ?? [];
+    const total = queryOne(storeFile(home), 'SELECT count(*) AS n FROM memories WHERE id IN (?, ?)', a, b)?.n;
+    return { ok: total === 2 && archived.some((m) => [a, b].includes(m.id)), detail: `archived ${archived.map((m) => m.id).join(', ') || 'none'}; rows ${total}` };
+  });
+  return {};
 }
 
 async function main() {
@@ -150,13 +177,13 @@ async function main() {
     home = setup.home;
     note(`temporary home ${home}; seeded ${setup.seeded.secrets.length} secret files; codex disabled: ${setup.seeded.disabled.join(', ') || 'none'}`);
     if (part !== 'two') await partOne(home);
-    if (part !== 'one') await partTwo(home);
+    const two = part !== 'one' ? await partTwo(home) : {};
     await check('no secret in the store, its WAL or the logs of the temporary home', () => {
       const file = storeFile(home);
       const r = leakCheck([file, `${file}-wal`, join(home, 'logs')], { secretsDir: join(home, 'secrets') });
       return { ok: r.secrets > 0 && r.leaks.length === 0 && r.errors.length === 0, detail: `${r.secrets} key files against ${r.checked.length} paths${r.leaks.length ? `; found in ${r.leaks.map((l) => l.file).join(', ')}` : ''}` };
     });
-    return finish(JOURNEY, { startedAt: started, mode: `real providers in a temporary JV_HOME, part ${part}`, record: part === 'all' });
+    return finish(JOURNEY, { startedAt: started, mode: `real providers in a temporary JV_HOME, part ${part}`, record: part === 'all', ...(two.blocked ? { blocked: two.blocked } : {}) });
   } finally {
     if (home) note(`worktrees removed from the sandbox: ${removeWorktreesUnder(SANDBOX, home).length}`);
     if (!flags.keep) cleanup(id);

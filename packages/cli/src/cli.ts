@@ -63,6 +63,13 @@ export const COMMANDS: Readonly<Record<string, CommandEntry>> = {
     module: './commands/memory.js',
     usage: 'jv memory add|search|list|archive|export  (add: --scope global|project [--project N] --kind K [--tag t]... "text")',
   },
+  // Goals, jobs and the improver (brief sections 9 and 10).
+  goal: {
+    module: './commands/goal.js',
+    usage: 'jv goal add|list|show|done|pause ...  (add: --project N --title T --text "..." [--priority 1..5]; list: [--project N] [--state S])',
+  },
+  job: { module: './commands/job.js', booleans: ['force'], usage: 'jv job run <kind> --project N [--force] | jv job list [--project N] | jv job show|cancel J' },
+  improve: { module: './commands/improve.js', booleans: ['force'], usage: 'jv improve memory|docs|skills --project N [--force]' },
   version: { module: './commands/version.js', usage: 'jv --version', internal: true },
 
   bootstrap: { module: './commands/bootstrap.js', usage: 'jv bootstrap [--skills PATH] [--node PATH]', internal: true },

@@ -3,20 +3,23 @@
 // planning task (kind single, duty plan, placed by Jev like any work) for the next few tasks. It never starts them:
 // finish() creates them queued, with after links, and the bot admits them under its limits.
 //
-// The plan job's request id is plan:<project>:<YYYY-MM-DD> (local day), so a schedule and a manual run on the same
-// day are one job; --force adds a suffix (jobs.ts). The template is templates/plan.md, verbatim from the brief, a
-// candidate to become a duty skill later (M-018).
+// Goals: addGoal, listGoals, requireGoal, doneGoal and pauseGoal (open or paused to done, open to paused; done is
+// final), goalView and the text of jv goal list|show. The plan job's request id is plan:<project>:<YYYY-MM-DD> (local
+// day), so a schedule and a manual run on the same day are one job; --force adds a suffix (jobs.ts, M-017). The
+// template is templates/plan.md, verbatim from the brief, a candidate to become a duty skill later (M-018). The plan
+// task's lists leave out the jobs' own work tasks (request id job:<J>): a planning or tidying task is not project work.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { notFound, refused } from 'jevellan-core/errors';
+import { normalizeId } from 'jevellan-core/ids';
 import { lastJsonBlock, localDay, type JobHandler } from 'jevellan-core/jobs';
 import { paths } from 'jevellan-core/paths';
 import type { ReportView } from 'jevellan-core/report';
 import type { Store } from 'jevellan-core/store';
-import { createTask, type CreateTaskInput } from 'jevellan-core/tasks';
+import { createTask, localStamp, type CreateTaskInput } from 'jevellan-core/tasks';
 import { TASK_KINDS, type GoalRow, type JobRow, type ProjectRow, type TaskRow } from 'jevellan-core/types';
 import * as memory from 'jevellan-memory';
 
@@ -45,12 +48,14 @@ function requireProject(store: Store, name: string): ProjectRow {
 
 export function addGoal(store: Store, input: { project: string; title: string; text: string; priority?: number }): GoalRow {
   const project = requireProject(store, input.project);
-  return store.createGoal({ project_id: project.id, title: input.title, text: input.text, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
+  // A title is one line, as a task's is (jv goal list prints one line per goal).
+  const title = input.title.replace(/\s+/g, ' ').trim();
+  return store.createGoal({ project_id: project.id, title, text: input.text, ...(input.priority !== undefined ? { priority: input.priority } : {}) });
 }
 
 export function requireGoal(store: Store, id: string): GoalRow {
-  const g = store.getGoal(id.trim().toUpperCase());
-  if (!g) throw notFound(`no goal ${id}`);
+  const g = store.getGoal(normalizeId(id));
+  if (!g) throw notFound(`no goal ${id.trim()}`);
   return g;
 }
 
@@ -59,9 +64,62 @@ export function listGoals(store: Store, filter: { project?: string; states?: Arr
   return store.listGoals({ ...(project ? { project_id: project.id } : {}), ...(filter.states ? { states: filter.states } : {}) });
 }
 
-/** A goal as `jv goal list|show --json` prints it. */
-export function goalView(store: Store, g: GoalRow): Record<string, unknown> {
+/** Marks a goal done (from open or paused; a done goal is returned as it is). The planner no longer plans for it. */
+export function doneGoal(store: Store, id: string): GoalRow {
+  const g = requireGoal(store, id);
+  return g.state === 'done' ? g : store.setGoalState(g.id, 'done');
+}
+
+/** Pauses an open goal (a paused goal is returned as it is); a done goal is refused (exit 2): done is final. */
+export function pauseGoal(store: Store, id: string): GoalRow {
+  const g = requireGoal(store, id);
+  if (g.state === 'done') throw refused(`goal ${g.id} is done; a done goal is not paused`);
+  return g.state === 'paused' ? g : store.setGoalState(g.id, 'paused');
+}
+
+/** A goal as `jv goal add|list|show|done|pause --json` prints it (the MCP's jv_goal_* tools and the UI give the same). */
+export interface GoalView {
+  id: string;
+  project: string;
+  title: string;
+  text: string;
+  priority: number;
+  state: GoalRow['state'];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function goalView(store: Store, g: GoalRow): GoalView {
   return { id: g.id, project: store.getProject(g.project_id)?.name ?? g.project_id, title: g.title, text: g.text, priority: g.priority, state: g.state, createdAt: g.created_at, updatedAt: g.updated_at };
+}
+
+/** No text line of jv goal list is wider than this (AGENTS.md). */
+export const GOAL_LINE_MAX = 100;
+
+function cutLine(line: string, max = GOAL_LINE_MAX): string {
+  const chars = [...line];
+  return chars.length > max ? `${chars.slice(0, max - 3).join('')}...` : line;
+}
+
+/**
+ * One line per goal, ids first, at most 100 characters (the title is cut): id, priority (p1 is the highest), state,
+ * project, created (local HH:MM, with the date when not today) and title.
+ */
+export function formatGoalList(goals: readonly GoalView[], now: number = Date.now()): string {
+  if (!goals.length) return 'No goals.';
+  const rows = goals.map((g) => [g.id, `p${g.priority}`, g.state, g.project, localStamp(g.createdAt, now)]);
+  const widths = rows[0]!.map((_, c) => Math.max(...rows.map((r) => [...r[c]!].length)));
+  return rows.map((r, i) => cutLine([...r.map((v, c) => v.padEnd(widths[c]!)), goals[i]!.title].join('  '))).join('\n');
+}
+
+/** jv goal show G: the goal for people, its text in full. */
+export function formatGoalView(g: GoalView, now: number = Date.now()): string {
+  return [
+    `${g.id}  ${g.title}`,
+    `Project ${g.project}, priority ${g.priority}, ${g.state}. Created ${localStamp(g.createdAt, now)}, updated ${localStamp(g.updatedAt, now)}.`,
+    '',
+    g.text,
+  ].join('\n');
 }
 
 // ---- the plan job -------------------------------------------------------------------------------------------
@@ -94,10 +152,13 @@ function maxTasksOf(job: JobRow): number {
 
 const OPEN_STATES = ['queued', 'running', 'waiting-owner', 'landing'] as const;
 
+/** A job's own work task (request id job:<J>), which the plan lists leave out. */
+const isJobTask = (t: TaskRow) => t.request_id.startsWith('job:');
+
 /** The plan task's text, from templates/plan.md (exported for tests and for jv job show). */
 export function planTaskText(store: Store, project: ProjectRow, maxTasks: number, now: Date = new Date()): string {
   const goals = store.listGoals({ project_id: project.id, states: ['open'] });
-  const tasks = store.listTasks({ project_id: project.id });
+  const tasks = store.listTasks({ project_id: project.id }).filter((t) => !isJobTask(t));
   const since = now.getTime() - 14 * DAY;
   const recent = tasks.filter((t) => Date.parse(t.created_at) >= since && !(OPEN_STATES as readonly string[]).includes(t.state));
   const open = tasks.filter((t) => (OPEN_STATES as readonly string[]).includes(t.state));
@@ -117,7 +178,8 @@ export function planTaskText(store: Store, project: ProjectRow, maxTasks: number
 const ProposedTask = z.strictObject({
   goal: z.string().regex(/^G[0-9A-Z]{6}$/),
   kind: z.enum(TASK_KINDS),
-  duty: z.string().optional(),
+  // The template says "<only for single>": a planner that writes null for the other kinds means none.
+  duty: z.string().nullable().optional(),
   title: z.string().min(1).max(120),
   text: z.string().min(1).max(32768),
   after: z.union([z.number().int().min(0), z.string().regex(/^\d+$/), z.null()]).optional(),
@@ -151,13 +213,14 @@ export async function finishPlan(store: Store, job: JobRow, report: ReportView |
   const project = store.getProject(job.project_id)!;
   const openGoals = new Set(store.listGoals({ project_id: project.id, states: ['open'] }).map((g) => g.id));
   for (const t of parsed.data.tasks) if (!openGoals.has(t.goal)) throw refused(`the plan names ${t.goal}, which is not an open goal of ${project.name}`);
-  const openTitles = new Set(store.listTasks({ project_id: project.id, states: ['queued', 'running', 'waiting-owner', 'landing'] }).map((t) => t.title.toLowerCase()));
+  const titleKey = (title: string) => title.replace(/\s+/g, ' ').trim().toLowerCase();
+  const openTitles = new Set(store.listTasks({ project_id: project.id, states: [...OPEN_STATES] }).map((t) => titleKey(t.title)));
   const seen = new Set<string>();
   const created: string[] = [];
   const byIndex = new Map<number, string>();
   const skipped: Array<{ title: string; reason: string }> = [];
   for (const [index, t] of parsed.data.tasks.entries()) {
-    const key = t.title.trim().toLowerCase();
+    const key = titleKey(t.title);
     if (seen.has(key)) {
       skipped.push({ title: t.title, reason: 'the same title as an earlier task of this plan' });
       continue;

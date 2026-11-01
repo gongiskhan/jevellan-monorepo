@@ -16,6 +16,12 @@
       "path": "../memory"
     },
     {
+      "path": "../planner"
+    },
+    {
+      "path": "../improver"
+    },
+    {
       "path": "../ui"
     }
   ]

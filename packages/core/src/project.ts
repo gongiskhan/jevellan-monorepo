@@ -5,6 +5,10 @@
 // ~/.jv/projects/<name>/ (project.json and landing.json from the templates, an empty notes.md, workflows/), adds the
 // jv lines to the repository's shared .git/info/exclude once, and installs the jevellan skills and the coordinator
 // agent into the Claude provider homes. It never edits the project's checkout. Running it again changes nothing.
+//
+// The project named jevellan-skills (the policy skills, which the improver's improve-skills job changes, brief section
+// 10) gets landing.json with riskyPaths ["**"] and the rest of the template, so every landing of it routes to
+// ask-owner: a skill change is always a proposal the owner lands or leaves. An existing landing.json is kept.
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
@@ -115,6 +119,15 @@ export function detectCommands(repo: string): { testCommand: string | null; devC
   return { testCommand, devCommand };
 }
 
+/** The project whose every landing asks the owner (brief section 10; the improver's SKILLS_PROJECT). */
+export const SKILLS_PROJECT_NAME = 'jevellan-skills';
+
+/** landing.json of a new project: the template, with every path risky for jevellan-skills. */
+export function landingTemplate(name: string): Record<string, unknown> {
+  const template = readTemplate('landing.json');
+  return name === SKILLS_PROJECT_NAME ? { ...template, riskyPaths: ['**'] } : template;
+}
+
 function readTemplate(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(RUNTIME_ROOT, 'templates', name), 'utf8')) as Record<string, unknown>;
 }
@@ -178,7 +191,7 @@ export function addProject(path: string, options: { name?: string } = {}): AddPr
   const projectJson = { ...readTemplate('project.json'), ...detectCommands(top) };
   const files: AddProjectResult['files'] = {
     'project.json': writeIfMissing(paths.projectJson(name), `${JSON.stringify(projectJson, null, 2)}\n`),
-    'landing.json': writeIfMissing(paths.projectLanding(name), `${JSON.stringify(readTemplate('landing.json'), null, 2)}\n`),
+    'landing.json': writeIfMissing(paths.projectLanding(name), `${JSON.stringify(landingTemplate(name), null, 2)}\n`),
     'notes.md': writeIfMissing(paths.projectNotes(name), ''),
     'workflows/': existsSync(paths.projectWorkflowsDir(name)) ? 'kept' : 'created',
   };
